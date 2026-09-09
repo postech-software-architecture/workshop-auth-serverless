@@ -1,0 +1,68 @@
+name: CI — Lambda (Java 21)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build, test e package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'maven'
+
+      # W1: o handler ainda nao existe (entrega da W4-A). O step nao falha por
+      # ausencia de pom.xml, mas TAMBEM nao finge sucesso: avisa e sai.
+      - name: Build e testes
+        run: |
+          if [ ! -f pom.xml ]; then
+            echo "::notice::pom.xml ainda nao existe — handler e entrega da W4-A"
+            exit 0
+          fi
+          mvn -B verify
+
+      - name: Upload do artefato
+        if: hashFiles('pom.xml') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-package
+          path: target/*.jar
+          if-no-files-found: warn
+
+  terraform:
+    name: Terraform (fmt, validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: fmt e validate
+        run: |
+          if [ ! -d infra ]; then
+            echo "::notice::infra/ ainda nao existe — IaC e entrega da W4-A"
+            exit 0
+          fi
+          cd infra
+          terraform fmt -check -recursive -diff
+          terraform init -backend=false -input=false
+          terraform validate -no-color
