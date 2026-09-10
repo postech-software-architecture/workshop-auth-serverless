@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-for command in aws zip; do
+for command in aws zip python3; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERRO: comando obrigatorio ausente: $command" >&2
     exit 2
@@ -66,7 +66,7 @@ aws lambda invoke \
   --payload '{}' \
   "$work_dir/response.json" >/dev/null
 
-python - "$work_dir/response.json" <<'PY'
+python3 - "$work_dir/response.json" <<'PY'
 import json
 import pathlib
 import sys

@@ -61,11 +61,12 @@ repo de Kubernetes:
 ```bash
 terraform output -raw cluster_name
 terraform output -raw vpc_id
-terraform output -json private_subnet_ids
+terraform output -json private_subnet_ids | jq -r 'join(",")'
 ```
 
 No workflow, escolha `vpclink-nlb`, confirme com `CRIAR-E-LIMPAR` e informe o cluster, a VPC e
-as subnets privadas separadas por vírgula. O job cria um namespace de teste, um NLB interno,
+cole a saída do terceiro comando no campo de subnets privadas. Ela já estará separada por
+vírgulas, no formato aceito pelo script. O job cria um namespace de teste, um NLB interno,
 um VPC Link e uma HTTP API temporários. O veredito só é aprovado quando o caminho público do
 Gateway até o backend privado responde `200`.
 

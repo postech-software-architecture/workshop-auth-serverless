@@ -7,7 +7,7 @@ for variable in OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS; do
     exit 2
   }
 done
-for command in curl openssl python; do
+for command in curl openssl python3; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERRO: comando obrigatorio ausente: $command" >&2
     exit 2
@@ -18,7 +18,7 @@ endpoint="${OTEL_EXPORTER_OTLP_ENDPOINT%/}"
 [[ "$endpoint" == */v1/traces ]] || endpoint="$endpoint/v1/traces"
 trace_id="$(openssl rand -hex 16)"
 span_id="$(openssl rand -hex 8)"
-now_ns="$(python -c 'import time; print(time.time_ns())')"
+now_ns="$(python3 -c 'import time; print(time.time_ns())')"
 end_ns="$((now_ns + 1000000))"
 payload="$(mktemp)"
 response="${payload}.response"
@@ -42,14 +42,16 @@ for entry in "${raw_headers[@]}"; do
 done
 
 echo "Enviando um trace OTLP/HTTP sem dados de negocio..."
-http_status="$(curl --silent --show-error \
+if ! http_status="$(curl --silent --show-error \
   --output "$response" \
   --write-out '%{http_code}' \
   --header 'Content-Type: application/json' \
   "${curl_headers[@]}" \
   --request POST \
   --data-binary "@$payload" \
-  "$endpoint")"
+  "$endpoint")"; then
+  http_status="000"
+fi
 
 if [[ "$http_status" != 2* ]]; then
   echo "VEREDITO: REPROVADO — o backend OTLP respondeu HTTP $http_status." >&2
