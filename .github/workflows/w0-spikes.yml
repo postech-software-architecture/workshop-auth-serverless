@@ -1,0 +1,94 @@
+name: W0 — spikes controlados
+
+on:
+  workflow_dispatch:
+    inputs:
+      spike:
+        description: Spike a executar
+        required: true
+        type: choice
+        options:
+          - otlp-ingestion
+          - labrole-lambda
+          - vpclink-nlb
+      environment:
+        description: GitHub Environment que contem os secrets
+        required: true
+        default: prod
+        type: environment
+      confirm_temporary_resources:
+        description: Para AWS, digite CRIAR-E-LIMPAR; OTLP nao cria recurso cloud
+        required: false
+        type: string
+      cluster_name:
+        description: Nome do EKS (somente vpclink-nlb)
+        required: false
+        type: string
+      vpc_id:
+        description: VPC ID (somente vpclink-nlb)
+        required: false
+        type: string
+      private_subnet_ids:
+        description: IDs das subnets privadas separados por virgula (somente vpclink-nlb)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w0-spike-${{ inputs.spike }}
+  cancel-in-progress: false
+
+jobs:
+  otlp-ingestion:
+    if: inputs.spike == 'otlp-ingestion'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validar ingestao OTLP
+        env:
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+        run: bash scripts/spikes/otlp-ingestion.sh
+
+  labrole-lambda:
+    if: inputs.spike == 'labrole-lambda'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exigir confirmacao
+        env:
+          CONFIRMATION: ${{ inputs.confirm_temporary_resources }}
+        run: test "$CONFIRMATION" = 'CRIAR-E-LIMPAR'
+      - name: Validar LabRole com Lambda temporaria
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          LAB_ROLE_ARN: ${{ vars.LAB_ROLE_ARN }}
+        run: bash scripts/spikes/lab-role-lambda.sh
+
+  vpclink-nlb:
+    if: inputs.spike == 'vpclink-nlb'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exigir confirmacao
+        env:
+          CONFIRMATION: ${{ inputs.confirm_temporary_resources }}
+        run: test "$CONFIRMATION" = 'CRIAR-E-LIMPAR'
+      - name: Validar NLB interno e VPC Link
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          VPC_ID: ${{ inputs.vpc_id }}
+          PRIVATE_SUBNET_IDS: ${{ inputs.private_subnet_ids }}
+        run: bash scripts/spikes/vpc-link-nlb.sh
