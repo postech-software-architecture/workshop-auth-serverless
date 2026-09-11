@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -euo pipefail
 
 for variable in CLUSTER_NAME VPC_ID PRIVATE_SUBNET_IDS; do
   [[ -n "${!variable:-}" ]] || {
@@ -21,23 +21,76 @@ namespace="w0-vpclink-spike"
 sg_id=""
 vpc_link_id=""
 api_id=""
+diagnostics_written=false
+
+diagnostics() {
+  [[ "$diagnostics_written" == false ]] || return 0
+  diagnostics_written=true
+  echo "::group::Diagnostico do namespace $namespace"
+  kubectl get deployment,pod,service -n "$namespace" -o wide --request-timeout=20s || true
+  kubectl describe service echo -n "$namespace" --request-timeout=20s || true
+  kubectl get events -n "$namespace" --sort-by='.lastTimestamp' --request-timeout=20s || true
+  echo "::endgroup::"
+
+  echo "::group::Diagnostico do AWS Load Balancer Controller"
+  kubectl get deployment,pod -n kube-system \
+    -l app.kubernetes.io/name=aws-load-balancer-controller -o wide --request-timeout=20s || true
+  kubectl describe deployment aws-load-balancer-controller -n kube-system --request-timeout=20s || true
+  kubectl logs deployment/aws-load-balancer-controller -n kube-system \
+    --all-containers=true --tail=200 --request-timeout=20s || true
+  echo "::endgroup::"
+}
+
+fail() {
+  echo "ERRO: $*" >&2
+  diagnostics
+  exit 1
+}
+
+unexpected_failure() {
+  local exit_code=$?
+  local line=$1
+  echo "ERRO: comando inesperadamente falhou na linha $line (exit $exit_code)." >&2
+  diagnostics
+  exit "$exit_code"
+}
 
 cleanup() {
+  trap - ERR
   set +e
-  [[ -n "$api_id" ]] && aws apigatewayv2 delete-api --api-id "$api_id" >/dev/null 2>&1
-  [[ -n "$vpc_link_id" ]] && aws apigatewayv2 delete-vpc-link --vpc-link-id "$vpc_link_id" >/dev/null 2>&1
-  kubectl delete namespace "$namespace" --wait=false >/dev/null 2>&1
+  echo "Iniciando limpeza dos recursos temporarios..."
+  [[ -z "$api_id" ]] || aws apigatewayv2 delete-api --api-id "$api_id" >/dev/null 2>&1 || \
+    echo "AVISO: nao foi possivel solicitar a remocao da API $api_id."
+  [[ -z "$vpc_link_id" ]] || aws apigatewayv2 delete-vpc-link --vpc-link-id "$vpc_link_id" >/dev/null 2>&1 || \
+    echo "AVISO: nao foi possivel solicitar a remocao do VPC Link $vpc_link_id."
+
+  kubectl delete namespace "$namespace" --wait=false --request-timeout=20s >/dev/null 2>&1 || \
+    echo "AVISO: nao foi possivel solicitar a remocao do namespace $namespace."
+  namespace_status="$(kubectl get namespace "$namespace" -o name --request-timeout=20s 2>&1)"
+  namespace_get_exit=$?
+  if [[ $namespace_get_exit -eq 0 ]]; then
+    kubectl wait --for=delete namespace/"$namespace" --timeout=300s --request-timeout=20s >/dev/null 2>&1 || \
+      echo "AVISO: namespace $namespace ainda esta em remocao; verifique-o manualmente."
+  elif [[ "$namespace_status" != *NotFound* ]]; then
+    echo "AVISO: nao foi possivel confirmar a remocao do namespace: $namespace_status"
+  fi
   if [[ -n "$sg_id" ]]; then
     for _ in {1..12}; do
       aws ec2 delete-security-group --group-id "$sg_id" >/dev/null 2>&1 && break
       sleep 10
     done
+    aws ec2 describe-security-groups --group-ids "$sg_id" >/dev/null 2>&1 && \
+      echo "AVISO: security group $sg_id ainda existe; remova-o depois que as ENIs do VPC Link desaparecerem."
   fi
+  echo "Rotina de limpeza automatica finalizada; confira os avisos acima."
 }
 trap cleanup EXIT
+trap 'unexpected_failure $LINENO' ERR
 
 echo "Atualizando kubeconfig e criando backend temporario..."
 aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
+kubectl rollout status deployment/aws-load-balancer-controller \
+  -n kube-system --timeout=120s >/dev/null
 kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 cat <<'YAML' | kubectl apply -n "$namespace" -f - >/dev/null
 apiVersion: apps/v1
@@ -80,13 +133,15 @@ for _ in {1..60}; do
   [[ -n "$nlb_dns" ]] && break
   sleep 10
 done
-[[ -n "$nlb_dns" ]] || { echo "ERRO: NLB nao recebeu DNS em 10 minutos." >&2; exit 1; }
+if [[ -z "$nlb_dns" ]]; then
+  fail "NLB nao recebeu DNS em 10 minutos."
+fi
 
 nlb_arn="$(aws elbv2 describe-load-balancers \
   --query "LoadBalancers[?DNSName=='${nlb_dns}'].LoadBalancerArn | [0]" --output text)"
-[[ "$nlb_arn" != None && -n "$nlb_arn" ]] || { echo "ERRO: NLB nao encontrado na API ELBv2." >&2; exit 1; }
+[[ "$nlb_arn" != None && -n "$nlb_arn" ]] || fail "NLB nao encontrado na API ELBv2."
 scheme="$(aws elbv2 describe-load-balancers --load-balancer-arns "$nlb_arn" --query 'LoadBalancers[0].Scheme' --output text)"
-[[ "$scheme" == internal ]] || { echo "ERRO: o Load Balancer criado nao e interno (scheme=$scheme)." >&2; exit 1; }
+[[ "$scheme" == internal ]] || fail "o Load Balancer criado nao e interno (scheme=$scheme)."
 
 listener_arn=""
 for _ in {1..30}; do
@@ -94,7 +149,7 @@ for _ in {1..30}; do
   [[ -n "$listener_arn" && "$listener_arn" != None ]] && break
   sleep 10
 done
-[[ -n "$listener_arn" && "$listener_arn" != None ]] || { echo "ERRO: listener do NLB nao encontrado." >&2; exit 1; }
+[[ -n "$listener_arn" && "$listener_arn" != None ]] || fail "listener do NLB nao encontrado."
 
 sg_id="$(aws ec2 create-security-group \
   --group-name "w0-vpclink-${suffix}" \
@@ -115,7 +170,7 @@ for _ in {1..60}; do
   [[ "$status" == FAILED || "$status" == INACTIVE ]] && break
   sleep 10
 done
-[[ "$status" == AVAILABLE ]] || { echo "ERRO: VPC Link terminou com status $status." >&2; exit 1; }
+[[ "$status" == AVAILABLE ]] || fail "VPC Link terminou com status $status."
 
 api_id="$(aws apigatewayv2 create-api --name "w0-vpclink-${suffix}" --protocol-type HTTP --query ApiId --output text)"
 integration_id="$(aws apigatewayv2 create-integration \
@@ -137,7 +192,7 @@ for _ in {1..30}; do
   [[ "$http_status" == 200 ]] && break
   sleep 10
 done
-[[ "$http_status" == 200 ]] || { echo "ERRO: Gateway -> VPC Link -> NLB respondeu HTTP $http_status." >&2; exit 1; }
+[[ "$http_status" == 200 ]] || fail "Gateway -> VPC Link -> NLB respondeu HTTP $http_status."
 
 echo "VEREDITO: APROVADO — NLB interno, VPC Link AVAILABLE e proxy HTTP responderam 200."
 echo "LIMPEZA: API, VPC Link, namespace/NLB e security group temporarios serao removidos."

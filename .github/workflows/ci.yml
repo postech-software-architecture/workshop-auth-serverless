@@ -20,6 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validar sintaxe dos scripts Bash
+        run: |
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find scripts -type f -name '*.sh' -print0)
+
       # O cache do Maven exige um pom.xml para calcular a chave e falha o job sem
       # ele. Enquanto o handler nao existe (W4-A), o setup roda sem cache.
       - name: Set up JDK 21
