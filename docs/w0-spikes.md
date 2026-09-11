@@ -82,6 +82,10 @@ O último comando também lista NLBs internos legítimos; procure apenas o criad
 Se a limpeza do security group falhar por consistência eventual, procure a descrição
 `Temporary W0 VPC Link validation` e remova-o depois que as ENIs do VPC Link desaparecerem.
 
+Se o NLB nao receber DNS no tempo limite, o workflow imprime no proprio log os recursos e
+eventos do namespace, o estado do deployment e dos pods do AWS Load Balancer Controller e as
+ultimas 200 linhas de log do controller antes de iniciar a limpeza automatica.
+
 ## Execução local opcional
 
 Em Linux/WSL com AWS CLI, `kubectl`, `curl`, `zip`, `openssl` e `python`:

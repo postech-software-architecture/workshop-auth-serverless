@@ -21,23 +21,54 @@ namespace="w0-vpclink-spike"
 sg_id=""
 vpc_link_id=""
 api_id=""
+diagnostics_written=false
+
+diagnostics() {
+  [[ "$diagnostics_written" == false ]] || return 0
+  diagnostics_written=true
+  echo "::group::Diagnostico do namespace $namespace"
+  kubectl get deployment,pod,service -n "$namespace" -o wide || true
+  kubectl describe service echo -n "$namespace" || true
+  kubectl get events -n "$namespace" --sort-by='.lastTimestamp' || true
+  echo "::endgroup::"
+
+  echo "::group::Diagnostico do AWS Load Balancer Controller"
+  kubectl get deployment,pod -n kube-system \
+    -l app.kubernetes.io/name=aws-load-balancer-controller -o wide || true
+  kubectl describe deployment aws-load-balancer-controller -n kube-system || true
+  kubectl logs deployment/aws-load-balancer-controller -n kube-system \
+    --all-containers=true --tail=200 || true
+  echo "::endgroup::"
+}
 
 cleanup() {
+  trap - ERR
   set +e
+  echo "Iniciando limpeza dos recursos temporarios..."
   [[ -n "$api_id" ]] && aws apigatewayv2 delete-api --api-id "$api_id" >/dev/null 2>&1
   [[ -n "$vpc_link_id" ]] && aws apigatewayv2 delete-vpc-link --vpc-link-id "$vpc_link_id" >/dev/null 2>&1
   kubectl delete namespace "$namespace" --wait=false >/dev/null 2>&1
+  if kubectl get namespace "$namespace" >/dev/null 2>&1; then
+    kubectl wait --for=delete namespace/"$namespace" --timeout=300s >/dev/null 2>&1 || \
+      echo "AVISO: namespace $namespace ainda esta em remocao; verifique-o manualmente."
+  fi
   if [[ -n "$sg_id" ]]; then
     for _ in {1..12}; do
       aws ec2 delete-security-group --group-id "$sg_id" >/dev/null 2>&1 && break
       sleep 10
     done
+    aws ec2 describe-security-groups --group-ids "$sg_id" >/dev/null 2>&1 && \
+      echo "AVISO: security group $sg_id ainda existe; remova-o depois que as ENIs do VPC Link desaparecerem."
   fi
+  echo "Limpeza automatica finalizada."
 }
 trap cleanup EXIT
+trap diagnostics ERR
 
 echo "Atualizando kubeconfig e criando backend temporario..."
 aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
+kubectl rollout status deployment/aws-load-balancer-controller \
+  -n kube-system --timeout=120s >/dev/null
 kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 cat <<'YAML' | kubectl apply -n "$namespace" -f - >/dev/null
 apiVersion: apps/v1
@@ -80,7 +111,11 @@ for _ in {1..60}; do
   [[ -n "$nlb_dns" ]] && break
   sleep 10
 done
-[[ -n "$nlb_dns" ]] || { echo "ERRO: NLB nao recebeu DNS em 10 minutos." >&2; exit 1; }
+if [[ -z "$nlb_dns" ]]; then
+  echo "ERRO: NLB nao recebeu DNS em 10 minutos." >&2
+  diagnostics
+  exit 1
+fi
 
 nlb_arn="$(aws elbv2 describe-load-balancers \
   --query "LoadBalancers[?DNSName=='${nlb_dns}'].LoadBalancerArn | [0]" --output text)"
