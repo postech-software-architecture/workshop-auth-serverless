@@ -1,0 +1,211 @@
+name: W4 — Serverless CI, plan e deploy
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pom.xml'
+      - 'src/**'
+      - 'infra/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'pom.xml'
+      - 'src/**'
+      - 'infra/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Operação a executar
+        required: true
+        type: choice
+        options: [plan, deploy]
+        default: plan
+      confirmation:
+        description: Para deploy, digite APLICAR SERVERLESS PROD
+        required: false
+        type: string
+      environment:
+        description: GitHub Environment que contém os secrets
+        required: true
+        type: environment
+        default: prod
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w4-serverless-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+
+jobs:
+  ci:
+    name: Build, testes e pacote Lambda
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Validar scripts Bash
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d scripts ]; then
+            while IFS= read -r -d '' script; do bash -n "$script"; done < <(find scripts -type f -name '*.sh' -print0)
+          fi
+
+      - name: Testar e empacotar function.zip
+        run: mvn -B verify
+
+      - name: Conferir pacote Lambda
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s target/function.zip
+          unzip -l target/function.zip | head -20
+
+      - name: Publicar artefato Lambda
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-package-${{ github.sha }}
+          path: target/function.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  terraform:
+    name: Terraform fmt e validate
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - name: Validar IaC quando disponível
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d infra ]; then
+            echo '::notice::infra/ ainda não existe; aguardando o PR de IaC da W4.'
+            exit 0
+          fi
+          terraform -chdir=infra fmt -check -recursive -diff
+          terraform -chdir=infra init -backend=false -input=false
+          terraform -chdir=infra validate -no-color
+          if find infra -type f \( -name '*.tf' -o -name '*.tfvars' \) -print0 | xargs -0 grep -nE 'AWS_(ACCESS_KEY|SECRET|SESSION)|JWT_SECRET|DB_PASSWORD' >/dev/null; then
+            echo 'Segredo ou credencial encontrado em arquivo Terraform.' >&2
+            exit 1
+          fi
+
+  plan:
+    name: Terraform plan revisável
+    if: github.event_name == 'workflow_dispatch' && (inputs.action == 'plan' || inputs.action == '')
+    runs-on: ubuntu-latest
+    needs: [ci, terraform]
+    environment: ${{ inputs.environment || 'prod' }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - name: Configurar credenciais temporárias AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Confirmar identidade AWS
+        run: aws sts get-caller-identity --query Account --output text
+      - name: Executar plan sem expor variáveis sensíveis
+        shell: bash
+        env:
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          test -d infra
+          terraform -chdir=infra init -input=false
+          terraform -chdir=infra plan -input=false -no-color -out=tfplan
+          terraform -chdir=infra show -no-color tfplan > "$RUNNER_TEMP/tfplan.txt"
+          sed -E 's/(password|secret|token|authorization)[^=]*=.*/\1 = (sensitive)/Ig' "$RUNNER_TEMP/tfplan.txt" > "$RUNNER_TEMP/tfplan-sanitized.txt"
+      - name: Publicar plan sanitizado
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ github.sha }}
+          path: ${{ runner.temp }}/tfplan-sanitized.txt
+          retention-days: 7
+
+  deploy:
+    name: Deploy serverless prod
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'
+    runs-on: ubuntu-latest
+    needs: [ci, terraform]
+    environment: ${{ inputs.environment || 'prod' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exigir confirmação explícita
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: test "$CONFIRMATION" = 'APLICAR SERVERLESS PROD'
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - name: Configurar credenciais temporárias AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Confirmar identidade AWS
+        run: aws sts get-caller-identity --query Account --output text
+      - name: Aplicar Terraform
+        shell: bash
+        env:
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          test -d infra
+          terraform -chdir=infra init -input=false
+          terraform -chdir=infra apply -input=false -auto-approve
+      - name: Post-check do endpoint
+        shell: bash
+        env:
+          API_GATEWAY_URL: ${{ vars.API_GATEWAY_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${API_GATEWAY_URL:-}" ]; then
+            API_GATEWAY_URL="$(terraform -chdir=infra output -raw api_gateway_url)"
+          fi
+          test -n "$API_GATEWAY_URL"
+          echo "API_GATEWAY_URL=$API_GATEWAY_URL" >> "$GITHUB_STEP_SUMMARY"
+          smoke_url="${API_GATEWAY_URL%/}/api/auth/cpf"
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 -X POST "$smoke_url" -H 'content-type: application/json' --data '{"cpf":"11111111111"}')"
+          test "$status" = '422'
+          echo 'Smoke CPF inválido: HTTP 422' >> "$GITHUB_STEP_SUMMARY"
