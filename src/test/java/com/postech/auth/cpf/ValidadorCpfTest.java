@@ -1,0 +1,3 @@
+package com.postech.auth.cpf;
+import static org.assertj.core.api.Assertions.*; import org.junit.jupiter.api.Test;
+class ValidadorCpfTest { @Test void validaCpf(){assertThat(ValidadorCpf.ehValido("529.982.247-25")).isTrue();} @Test void rejeitaInvalidoCnpjENulos(){assertThat(ValidadorCpf.ehValido("11111111111")).isFalse(); assertThat(ValidadorCpf.ehValido("12345678000195")).isFalse(); assertThat(ValidadorCpf.ehValido(null)).isFalse();} @Test void documentoAceitaApenasCpf(){assertThatThrownBy(()->new Documento("12.345.678/0001-95")).isInstanceOf(IllegalArgumentException.class); assertThat(new Documento("529.982.247-25").mascarado()).isEqualTo("***.982.247-**");} }
