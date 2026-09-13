@@ -57,7 +57,7 @@ variable "db_name" {
 variable "lambda_handler" {
   type        = string
   description = "Handler implemented by the W4 auth core/handler PRs."
-  default     = "com.postech.auth.handler.AuthCpfHandler::handleRequest"
+  default     = "com.postech.auth.handler.AuthHandler::handleRequest"
 }
 
 variable "lambda_artifact_path" {
