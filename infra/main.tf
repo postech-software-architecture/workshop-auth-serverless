@@ -86,6 +86,7 @@ resource "aws_lambda_function" "auth" {
       DB_HOST     = local.db_host
       DB_PORT     = tostring(local.db_port)
       DB_NAME     = local.db_name
+      DB_URL      = "jdbc:postgresql://${local.db_host}:${local.db_port}/${local.db_name}"
       DB_USER     = local.db_username
       DB_PASSWORD = var.db_password
       JWT_SECRET  = var.jwt_secret
