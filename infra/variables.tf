@@ -11,12 +11,12 @@ variable "project" {
 
 variable "cluster_state_bucket" {
   type        = string
-  description = "S3 bucket containing the cluster Terraform state."
+  description = "S3 bucket containing the cluster Terraform state. In GitHub Actions this is supplied from TFSTATE_BUCKET."
 }
 
 variable "database_state_bucket" {
   type        = string
-  description = "S3 bucket containing the database Terraform state."
+  description = "S3 bucket containing the database Terraform state. In GitHub Actions this is supplied from TFSTATE_BUCKET."
 }
 
 variable "terraform_state_key" {

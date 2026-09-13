@@ -142,15 +142,32 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Confirmar identidade AWS
         run: aws sts get-caller-identity --query Account --output text
+      - name: Validar configuração do state remoto
+        shell: bash
+        env:
+          TFSTATE_BUCKET: ${{ vars.TFSTATE_BUCKET }}
+          TFSTATE_LOCK_TABLE: ${{ vars.TFSTATE_LOCK_TABLE }}
+        run: |
+          set -euo pipefail
+          test -n "${TFSTATE_BUCKET:-}" || { echo 'Variável de environment TFSTATE_BUCKET ausente.' >&2; exit 1; }
+          test -n "${TFSTATE_LOCK_TABLE:-}" || { echo 'Variável de environment TFSTATE_LOCK_TABLE ausente.' >&2; exit 1; }
       - name: Executar plan sem expor variáveis sensíveis
         shell: bash
         env:
+          TFSTATE_BUCKET: ${{ vars.TFSTATE_BUCKET }}
+          TFSTATE_LOCK_TABLE: ${{ vars.TFSTATE_LOCK_TABLE }}
+          TF_VAR_cluster_state_bucket: ${{ vars.TFSTATE_BUCKET }}
+          TF_VAR_database_state_bucket: ${{ vars.TFSTATE_BUCKET }}
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
         run: |
           set -euo pipefail
           test -d infra
-          terraform -chdir=infra init -input=false
+          terraform -chdir=infra init -input=false \
+            -backend-config="bucket=${TFSTATE_BUCKET}" \
+            -backend-config='key=serverless/terraform.tfstate' \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=${TFSTATE_LOCK_TABLE}"
           terraform -chdir=infra plan -input=false -no-color -out=tfplan
           terraform -chdir=infra show -no-color tfplan > "$RUNNER_TEMP/tfplan.txt"
           sed -E 's/(password|secret|token|authorization)[^=]*=.*/\1 = (sensitive)/Ig' "$RUNNER_TEMP/tfplan.txt" > "$RUNNER_TEMP/tfplan-sanitized.txt"
@@ -189,15 +206,32 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Confirmar identidade AWS
         run: aws sts get-caller-identity --query Account --output text
+      - name: Validar configuração do state remoto
+        shell: bash
+        env:
+          TFSTATE_BUCKET: ${{ vars.TFSTATE_BUCKET }}
+          TFSTATE_LOCK_TABLE: ${{ vars.TFSTATE_LOCK_TABLE }}
+        run: |
+          set -euo pipefail
+          test -n "${TFSTATE_BUCKET:-}" || { echo 'Variável de environment TFSTATE_BUCKET ausente.' >&2; exit 1; }
+          test -n "${TFSTATE_LOCK_TABLE:-}" || { echo 'Variável de environment TFSTATE_LOCK_TABLE ausente.' >&2; exit 1; }
       - name: Aplicar Terraform
         shell: bash
         env:
+          TFSTATE_BUCKET: ${{ vars.TFSTATE_BUCKET }}
+          TFSTATE_LOCK_TABLE: ${{ vars.TFSTATE_LOCK_TABLE }}
+          TF_VAR_cluster_state_bucket: ${{ vars.TFSTATE_BUCKET }}
+          TF_VAR_database_state_bucket: ${{ vars.TFSTATE_BUCKET }}
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
         run: |
           set -euo pipefail
           test -d infra
-          terraform -chdir=infra init -input=false
+          terraform -chdir=infra init -input=false \
+            -backend-config="bucket=${TFSTATE_BUCKET}" \
+            -backend-config='key=serverless/terraform.tfstate' \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=${TFSTATE_LOCK_TABLE}"
           terraform -chdir=infra apply -input=false -auto-approve
       - name: Post-check do endpoint
         shell: bash
