@@ -129,6 +129,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: Baixar pacote da Lambda
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-package-${{ github.sha }}
+          path: target
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.8
@@ -189,6 +194,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: Baixar pacote da Lambda
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-package-${{ github.sha }}
+          path: target
       - name: Exigir confirmação explícita
         env:
           CONFIRMATION: ${{ inputs.confirmation }}
