@@ -111,8 +111,10 @@ jobs:
           terraform -chdir=infra fmt -check -recursive -diff
           terraform -chdir=infra init -backend=false -input=false
           terraform -chdir=infra validate -no-color
-          if find infra -type f \( -name '*.tf' -o -name '*.tfvars' \) -print0 | xargs -0 grep -nE 'AWS_(ACCESS_KEY|SECRET|SESSION)|JWT_SECRET|DB_PASSWORD' >/dev/null; then
-            echo 'Segredo ou credencial encontrado em arquivo Terraform.' >&2
+          # Referências a variáveis sensíveis (por exemplo, var.jwt_secret)
+          # são esperadas. O guard bloqueia somente valores literais.
+          if find infra -type f \( -name '*.tf' -o -name '*.tfvars' \) -print0 | xargs -0 grep -nE "(JWT_SECRET|DB_PASSWORD|AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN))[[:space:]]*=[[:space:]]*['\"]" >/dev/null; then
+            echo 'Segredo ou credencial literal encontrado em arquivo Terraform.' >&2
             exit 1
           fi
 
