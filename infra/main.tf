@@ -39,21 +39,6 @@ locals {
   db_username        = coalesce(try(data.terraform_remote_state.database.outputs.db_username, null), var.db_username)
 }
 
-resource "aws_security_group" "lambda" {
-  name                   = "${var.project}-auth-lambda-sg"
-  description            = "Egress-only security group for the CPF authentication Lambda"
-  vpc_id                 = local.vpc_id
-  revoke_rules_on_delete = true
-
-  egress {
-    description = "Allow Lambda to reach RDS and AWS services through the VPC routes"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
 resource "aws_security_group" "vpc_link" {
   name                   = "${var.project}-api-vpc-link-sg"
   description            = "Egress security group for API Gateway VPC Link"
@@ -88,6 +73,7 @@ resource "aws_lambda_function" "auth" {
   source_code_hash = filebase64sha256(var.lambda_artifact_path)
   memory_size      = 1024
   timeout          = 20
+  publish          = true
   tracing_config { mode = "Active" }
 
   vpc_config {
@@ -109,6 +95,13 @@ resource "aws_lambda_function" "auth" {
   depends_on = [aws_cloudwatch_log_group.lambda]
 }
 
+resource "aws_lambda_alias" "prod" {
+  name             = "prod"
+  description      = "Production alias for the published CPF authentication Lambda version"
+  function_name    = aws_lambda_function.auth.function_name
+  function_version = aws_lambda_function.auth.version
+}
+
 resource "aws_apigatewayv2_api" "this" {
   name          = "${var.project}-edge"
   protocol_type = "HTTP"
@@ -123,7 +116,7 @@ resource "aws_apigatewayv2_vpc_link" "this" {
 resource "aws_apigatewayv2_integration" "auth" {
   api_id                 = aws_apigatewayv2_api.this.id
   integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_function.auth.invoke_arn
+  integration_uri        = aws_lambda_alias.prod.invoke_arn
   integration_method     = "POST"
   payload_format_version = "2.0"
 }
@@ -170,6 +163,7 @@ resource "aws_lambda_permission" "gateway" {
   statement_id  = "AllowApiGatewayInvoke"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.auth.function_name
+  qualifier     = aws_lambda_alias.prod.name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
 }
