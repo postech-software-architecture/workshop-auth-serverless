@@ -1,0 +1,25 @@
+openapi: 3.0.3
+info:
+  title: Workshop CPF Authentication
+  version: 1.0.0
+paths:
+  /api/auth/cpf:
+    post:
+      summary: Authenticate eligible client by CPF
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cpf]
+              properties:
+                cpf:
+                  type: string
+                  example: "123.456.789-09"
+      responses:
+        '200': {description: JWT issued}
+        '401': {description: Client not eligible}
+        '422': {description: Invalid CPF}
+        '500': {description: Internal error}
+        '503': {description: Database unavailable}
