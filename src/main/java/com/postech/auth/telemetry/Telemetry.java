@@ -7,6 +7,8 @@ import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.Meter;
+import io.opentelemetry.api.logs.Logger;
+import io.opentelemetry.api.logs.Severity;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanContext;
 
@@ -25,6 +27,9 @@ public final class Telemetry {
     private static final AttributeKey<String> OUTCOME = AttributeKey.stringKey("outcome");
     private static final AttributeKey<String> OPERATION = AttributeKey.stringKey("operation");
     private static final Meter METER = GlobalOpenTelemetry.getMeter(SERVICE_NAME);
+    private static final Logger LOGGER = GlobalOpenTelemetry.get().getLogsBridge()
+            .loggerBuilder(SERVICE_NAME)
+            .build();
     private static final LongCounter CPF_ATTEMPTS = counter(CPF_ATTEMPT, "CPF authentication attempts");
     private static final LongCounter CPF_FAILURES = counter(CPF_FAILURE, "CPF authentication failures");
     private static final LongCounter DATABASE_ERRORS = counter(DATABASE_ERROR, "Database errors during authentication");
@@ -67,7 +72,16 @@ public final class Telemetry {
             });
         }
         try {
-            System.out.println(JSON.writeValueAsString(payload));
+            String body = JSON.writeValueAsString(payload);
+            // Keep the structured CloudWatch copy and explicitly emit an OTLP LogRecord.
+            // The collector's OTLP receiver does not consume System.out by itself.
+            System.out.println(body);
+            LOGGER.logRecordBuilder()
+                    .setSeverity(Severity.INFO)
+                    .setBody(body)
+                    .setAttribute(AttributeKey.stringKey("event.name"), safeTag(event))
+                    .setAttribute(AttributeKey.stringKey("correlation.id"), safeTag(correlationId))
+                    .emit();
         } catch (JsonProcessingException ignored) {
             System.out.println("{\"service.name\":\"" + SERVICE_NAME + "\",\"event\":\"log_error\"}");
         }
