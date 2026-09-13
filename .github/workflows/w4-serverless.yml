@@ -59,7 +59,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-          cache: maven
+          # O merge ref de um PR pode ser criado antes do commit que introduz
+          # o pom.xml. Nesse caso o setup-java não deve tentar calcular a
+          # chave do cache Maven; o build continua obrigatório abaixo.
+          cache: ${{ hashFiles('pom.xml') != '' && 'maven' || '' }}
 
       - name: Validar scripts Bash
         shell: bash
