@@ -156,6 +156,17 @@ jobs:
           set -euo pipefail
           test -n "${TFSTATE_BUCKET:-}" || { echo 'Variável de environment TFSTATE_BUCKET ausente.' >&2; exit 1; }
           test -n "${TFSTATE_LOCK_TABLE:-}" || { echo 'Variável de environment TFSTATE_LOCK_TABLE ausente.' >&2; exit 1; }
+      - name: Validar pré-requisitos ADOT e New Relic
+        shell: bash
+        env:
+          ADOT_LAYER_ARN: ${{ vars.ADOT_LAYER_ARN }}
+          NEW_RELIC_OTLP_ENDPOINT: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net:4317' }}
+          NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$ADOT_LAYER_ARN" =~ ^arn:[^:]+:lambda:[^:]+:[0-9]{12}:layer:[^:]+:[0-9]+$ ]] || { echo 'Variável ADOT_LAYER_ARN ausente ou inválida.' >&2; exit 1; }
+          [[ "$NEW_RELIC_OTLP_ENDPOINT" == https://* ]] || { echo 'Variável NEW_RELIC_OTLP_ENDPOINT deve usar HTTPS.' >&2; exit 1; }
+          test -n "$NEW_RELIC_LICENSE_KEY" || { echo 'Secret NEW_RELIC_LICENSE_KEY ausente.' >&2; exit 1; }
       - name: Executar plan sem expor variáveis sensíveis
         shell: bash
         env:
@@ -165,6 +176,10 @@ jobs:
           TF_VAR_database_state_bucket: ${{ vars.TFSTATE_BUCKET }}
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+          TF_VAR_adot_layer_arn: ${{ vars.ADOT_LAYER_ARN }}
+          TF_VAR_new_relic_api_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+          TF_VAR_new_relic_otlp_endpoint: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net:4317' }}
+          TF_VAR_service_version: ${{ github.sha }}
         run: |
           set -euo pipefail
           test -d infra
@@ -225,6 +240,17 @@ jobs:
           set -euo pipefail
           test -n "${TFSTATE_BUCKET:-}" || { echo 'Variável de environment TFSTATE_BUCKET ausente.' >&2; exit 1; }
           test -n "${TFSTATE_LOCK_TABLE:-}" || { echo 'Variável de environment TFSTATE_LOCK_TABLE ausente.' >&2; exit 1; }
+      - name: Validar pré-requisitos ADOT e New Relic
+        shell: bash
+        env:
+          ADOT_LAYER_ARN: ${{ vars.ADOT_LAYER_ARN }}
+          NEW_RELIC_OTLP_ENDPOINT: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net:4317' }}
+          NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$ADOT_LAYER_ARN" =~ ^arn:[^:]+:lambda:[^:]+:[0-9]{12}:layer:[^:]+:[0-9]+$ ]] || { echo 'Variável ADOT_LAYER_ARN ausente ou inválida.' >&2; exit 1; }
+          [[ "$NEW_RELIC_OTLP_ENDPOINT" == https://* ]] || { echo 'Variável NEW_RELIC_OTLP_ENDPOINT deve usar HTTPS.' >&2; exit 1; }
+          test -n "$NEW_RELIC_LICENSE_KEY" || { echo 'Secret NEW_RELIC_LICENSE_KEY ausente.' >&2; exit 1; }
       - name: Aplicar Terraform
         shell: bash
         env:
@@ -234,6 +260,10 @@ jobs:
           TF_VAR_database_state_bucket: ${{ vars.TFSTATE_BUCKET }}
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+          TF_VAR_adot_layer_arn: ${{ vars.ADOT_LAYER_ARN }}
+          TF_VAR_new_relic_api_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+          TF_VAR_new_relic_otlp_endpoint: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net:4317' }}
+          TF_VAR_service_version: ${{ github.sha }}
         run: |
           set -euo pipefail
           test -d infra
