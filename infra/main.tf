@@ -74,6 +74,7 @@ resource "aws_lambda_function" "auth" {
   memory_size      = 1024
   timeout          = 20
   publish          = true
+  layers           = [var.adot_layer_arn]
   tracing_config { mode = "Active" }
 
   vpc_config {
@@ -90,6 +91,24 @@ resource "aws_lambda_function" "auth" {
       DB_USER     = local.db_username
       DB_PASSWORD = var.db_password
       JWT_SECRET  = var.jwt_secret
+
+      # ADOT Java agent and Lambda collector configuration. The API key is
+      # held in a sensitive Terraform variable and is never exposed in an
+      # output or log statement.
+      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/otel-handler"
+      OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
+      OTEL_SERVICE_NAME                   = "workshop-auth-serverless"
+      OTEL_SERVICE_VERSION                = var.service_version
+      OTEL_RESOURCE_ATTRIBUTES            = "service.name=workshop-auth-serverless,service.version=${var.service_version},deployment.environment=${var.deployment_environment}"
+      OTEL_TRACES_EXPORTER                = "otlp"
+      OTEL_METRICS_EXPORTER               = "otlp"
+      OTEL_LOGS_EXPORTER                  = "otlp"
+      # The Java SDK sends to the local ADOT collector. The collector then
+      # exports to New Relic using the endpoint and key below.
+      OTEL_EXPORTER_OTLP_ENDPOINT      = "http://localhost:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL      = "grpc"
+      NEW_RELIC_OPENTELEMETRY_ENDPOINT = var.new_relic_otlp_endpoint
+      NEW_RELIC_LICENSE_KEY            = var.new_relic_api_key
     }
   }
 
