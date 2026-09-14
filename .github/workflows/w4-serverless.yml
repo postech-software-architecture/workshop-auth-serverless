@@ -336,6 +336,8 @@ jobs:
         env:
           TFSTATE_BUCKET: ${{ vars.TFSTATE_BUCKET }}
           TFSTATE_LOCK_TABLE: ${{ vars.TFSTATE_LOCK_TABLE }}
+          TF_VAR_cluster_state_bucket: ${{ vars.TFSTATE_BUCKET }}
+          TF_VAR_database_state_bucket: ${{ vars.TFSTATE_BUCKET }}
           # Apenas satisfazem variáveis obrigatórias durante a remoção. Nenhum
           # valor é aplicado a recursos existentes pelo plano -destroy.
           TF_VAR_db_password: destroy-placeholder-password
