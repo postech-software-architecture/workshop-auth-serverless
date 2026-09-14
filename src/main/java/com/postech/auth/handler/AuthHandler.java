@@ -1,10 +1,86 @@
 package com.postech.auth.handler;
-import com.amazonaws.services.lambda.runtime.*; import com.amazonaws.services.lambda.runtime.events.*; import com.fasterxml.jackson.core.type.TypeReference; import com.fasterxml.jackson.databind.ObjectMapper; import com.postech.auth.cpf.Documento; import com.postech.auth.repository.AutenticacaoRepository; import com.postech.auth.token.EmissorJwt; import java.sql.SQLException; import java.util.*;
-public final class AuthHandler implements RequestHandler<APIGatewayV2HTTPEvent,APIGatewayV2HTTPResponse>{
- private static final ObjectMapper JSON=new ObjectMapper(); private final AutenticacaoRepository repository; private final EmissorJwt emissor;
- public AuthHandler(){this(new AutenticacaoRepository(),new EmissorJwt(System.getenv("JWT_SECRET")));} AuthHandler(AutenticacaoRepository r,EmissorJwt e){repository=r;emissor=e;}
- public APIGatewayV2HTTPResponse handleRequest(APIGatewayV2HTTPEvent e,Context c){String cid=correlation(e);log("request",cid,"POST /api/auth/cpf");try{Map<String,Object>b=JSON.readValue(Optional.ofNullable(e.getBody()).orElse(""),new TypeReference<>(){});Object raw=b.get("cpf");if(!(raw instanceof String cpf)||!cpf.matches("[0-9.\\- ]+"))return response(422,"CPF invalido",cid);Documento d;try{d=new Documento(cpf);}catch(IllegalArgumentException x){return response(422,"CPF invalido",cid);}var found=repository.buscarPorCpf(d.getValor());if(found.isEmpty()||!found.get().elegivel())return response(401,"Nao foi possivel autenticar",cid);var u=found.get();String token=emissor.emitir(u.id().toString(),u.username(),u.roles());return jsonResponse(200,Map.of("accessToken",token,"tokenType","Bearer","expiresIn",emissor.getValidadeSegundos()),cid);}catch(SQLException x){log("database_error",cid,"database unavailable");return response(503,"Servico temporariamente indisponivel",cid);}catch(Exception x){log("request_error",cid,"invalid request");return response(500,"Erro interno",cid);}}
- private static String correlation(APIGatewayV2HTTPEvent e){String id=null;if(e.getHeaders()!=null)for(var h:e.getHeaders().entrySet())if(h.getKey().equalsIgnoreCase("X-Correlation-ID"))id=h.getValue();if(id==null||id.isBlank())return UUID.randomUUID().toString();String s=id.replaceAll("[^A-Za-z0-9._-]","");return s.isBlank()?UUID.randomUUID().toString():s.substring(0,Math.min(64,s.length()));}
- private static APIGatewayV2HTTPResponse response(int status,String message,String cid){return APIGatewayV2HTTPResponse.builder().withStatusCode(status).withHeaders(Map.of("Content-Type","application/json","X-Correlation-ID",cid)).withBody("{\"message\":\""+message+"\"}").build();}
- static APIGatewayV2HTTPResponse jsonResponse(int status,Map<String,Object> body,String cid)throws Exception{return APIGatewayV2HTTPResponse.builder().withStatusCode(status).withHeaders(Map.of("Content-Type","application/json","X-Correlation-ID",cid)).withBody(JSON.writeValueAsString(body)).build();} private static void log(String ev,String cid,String detail){System.out.println("{\"event\":\""+ev+"\",\"correlationId\":\""+cid+"\",\"detail\":\""+detail+"\"}");}
+
+import com.amazonaws.services.lambda.runtime.Context;
+import com.amazonaws.services.lambda.runtime.RequestHandler;
+import com.amazonaws.services.lambda.runtime.events.APIGatewayV2HTTPEvent;
+import com.amazonaws.services.lambda.runtime.events.APIGatewayV2HTTPResponse;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.postech.auth.cpf.Documento;
+import com.postech.auth.repository.AutenticacaoRepository;
+import com.postech.auth.telemetry.Telemetry;
+import com.postech.auth.token.EmissorJwt;
+
+import java.sql.SQLException;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+public final class AuthHandler implements RequestHandler<APIGatewayV2HTTPEvent, APIGatewayV2HTTPResponse> {
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private final AutenticacaoRepository repository;
+    private final EmissorJwt emissor;
+
+    public AuthHandler() { this(new AutenticacaoRepository(), new EmissorJwt(System.getenv("JWT_SECRET"))); }
+    AuthHandler(AutenticacaoRepository repository, EmissorJwt emissor) { this.repository = repository; this.emissor = emissor; }
+
+    @Override
+    public APIGatewayV2HTTPResponse handleRequest(APIGatewayV2HTTPEvent event, Context context) {
+        String correlationId = correlation(event);
+        Telemetry.log("request", correlationId, Map.of("operation", "authenticate_cpf"));
+        Telemetry.cpfAttempt("received");
+        try {
+            Map<String, Object> body = JSON.readValue(Optional.ofNullable(event.getBody()).orElse(""), new TypeReference<>() {});
+            Object rawCpf = body.get("cpf");
+            if (!(rawCpf instanceof String cpf) || !cpf.matches("[0-9.\\- ]+")) {
+                Telemetry.cpfFailure("invalid_format"); return response(422, "CPF invalido", correlationId);
+            }
+            Documento documento;
+            try { documento = new Documento(cpf); }
+            catch (IllegalArgumentException invalidCpf) {
+                Telemetry.cpfFailure("invalid_document"); return response(422, "CPF invalido", correlationId);
+            }
+            var found = repository.buscarPorCpf(documento.getValor());
+            if (found.isEmpty() || !found.get().elegivel()) {
+                Telemetry.cpfFailure("not_eligible"); return response(401, "Nao foi possivel autenticar", correlationId);
+            }
+            var user = found.get();
+            String token = emissor.emitir(user.id().toString(), user.username(), user.roles());
+            Telemetry.log("authentication_success", correlationId, Map.of("operation", "authenticate_cpf", "outcome", "success"));
+            return jsonResponse(200, Map.of("accessToken", token, "tokenType", "Bearer", "expiresIn", emissor.getValidadeSegundos()), correlationId);
+        } catch (SQLException databaseFailure) {
+            Telemetry.cpfFailure("database"); Telemetry.databaseError();
+            Telemetry.log("database_error", correlationId, Map.of("operation", "authenticate_cpf", "outcome", "unavailable"));
+            return response(503, "Servico temporariamente indisponivel", correlationId);
+        } catch (Exception invalidRequest) {
+            Telemetry.cpfFailure("error");
+            Telemetry.log("request_error", correlationId, Map.of("operation", "authenticate_cpf", "outcome", "invalid_request"));
+            return response(500, "Erro interno", correlationId);
+        }
+    }
+
+    private static String correlation(APIGatewayV2HTTPEvent event) {
+        String id = null;
+        if (event != null && event.getHeaders() != null) for (var header : event.getHeaders().entrySet()) {
+            if (header.getKey().equalsIgnoreCase("X-Correlation-ID")) { id = header.getValue(); break; }
+        }
+        if (id == null || id.isBlank()) return UUID.randomUUID().toString();
+        String sanitized = id.replaceAll("[^A-Za-z0-9._-]", "");
+        return sanitized.isBlank() ? UUID.randomUUID().toString() : sanitized.substring(0, Math.min(64, sanitized.length()));
+    }
+
+    private static APIGatewayV2HTTPResponse response(int status, String message, String correlationId) {
+        try { return jsonResponse(status, Map.of("message", message), correlationId); }
+        catch (Exception ignored) {
+            return APIGatewayV2HTTPResponse.builder().withStatusCode(status)
+                    .withHeaders(Map.of("Content-Type", "application/json", "X-Correlation-ID", correlationId))
+                    .withBody("{\"message\":\"Erro interno\"}").build();
+        }
+    }
+
+    static APIGatewayV2HTTPResponse jsonResponse(int status, Map<String, Object> body, String correlationId) throws Exception {
+        return APIGatewayV2HTTPResponse.builder().withStatusCode(status)
+                .withHeaders(Map.of("Content-Type", "application/json", "X-Correlation-ID", correlationId))
+                .withBody(JSON.writeValueAsString(body)).build();
+    }
 }
