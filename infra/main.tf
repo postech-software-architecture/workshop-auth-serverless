@@ -33,10 +33,12 @@ locals {
   vpc_id             = data.terraform_remote_state.cluster.outputs.vpc_id
   private_subnet_ids = data.terraform_remote_state.cluster.outputs.private_subnet_ids
   db_client_sg_id    = data.terraform_remote_state.cluster.outputs.db_client_sg_id
-  db_host            = data.terraform_remote_state.database.outputs.db_host
-  db_port            = try(data.terraform_remote_state.database.outputs.db_port, 5432)
-  db_name            = data.terraform_remote_state.database.outputs.db_name
-  db_username        = coalesce(try(data.terraform_remote_state.database.outputs.db_username, null), var.db_username)
+  # During teardown the RDS state can already be empty. These fallbacks keep the
+  # serverless destroy plan evaluable; no placeholder is applied to state resources.
+  db_host     = try(data.terraform_remote_state.database.outputs.db_host, "destroy.invalid")
+  db_port     = try(data.terraform_remote_state.database.outputs.db_port, 5432)
+  db_name     = try(data.terraform_remote_state.database.outputs.db_name, "workshop")
+  db_username = coalesce(try(data.terraform_remote_state.database.outputs.db_username, null), var.db_username)
 }
 
 resource "aws_security_group" "vpc_link" {
