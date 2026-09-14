@@ -31,6 +31,7 @@ data "aws_lb_listener" "internal_api" {
 
 locals {
   vpc_id             = data.terraform_remote_state.cluster.outputs.vpc_id
+  vpc_cidr           = data.terraform_remote_state.cluster.outputs.vpc_cidr
   private_subnet_ids = data.terraform_remote_state.cluster.outputs.private_subnet_ids
   db_client_sg_id    = data.terraform_remote_state.cluster.outputs.db_client_sg_id
   # During teardown the RDS state can already be empty. These fallbacks keep the
@@ -49,10 +50,10 @@ resource "aws_security_group" "vpc_link" {
 
   egress {
     description = "Reach the internal NLB"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = [local.vpc_cidr]
   }
 }
 
