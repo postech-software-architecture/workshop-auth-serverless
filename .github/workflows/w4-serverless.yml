@@ -284,10 +284,14 @@ jobs:
           fi
           test -n "$API_GATEWAY_URL"
           echo "API_GATEWAY_URL=$API_GATEWAY_URL" >> "$GITHUB_STEP_SUMMARY"
-          smoke_url="${API_GATEWAY_URL%/}/api/auth/cpf"
-          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 -X POST "$smoke_url" -H 'content-type: application/json' --data '{"cpf":"11111111111"}')"
-          test "$status" = '422'
-          echo 'Smoke CPF inválido: HTTP 422' >> "$GITHUB_STEP_SUMMARY"
+          response="$(curl --silent --show-error --write-out '\n%{http_code}' --max-time 15 -X POST "$smoke_url" -H 'content-type: application/json' --data '{"cpf":"11111111111"}')"
+          status="$(echo "$response" | tail -n 1)"
+          body="$(echo "$response" | sed '$d')"
+          if [ "$status" != '422' ]; then
+            echo "::error::Smoke CPF inválido falhou! Esperado HTTP 422, mas recebeu HTTP $status. Resposta: $body" >&2
+            exit 1
+          fi
+          echo "Smoke CPF inválido: HTTP 422 (sucesso)" >> "$GITHUB_STEP_SUMMARY"
 
   destroy:
     name: Destroy serverless prod

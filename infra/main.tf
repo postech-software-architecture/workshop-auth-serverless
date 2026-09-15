@@ -97,7 +97,7 @@ resource "aws_lambda_function" "auth" {
       # ADOT Java agent and Lambda collector configuration. The API key is
       # held in a sensitive Terraform variable and is never exposed in an
       # output or log statement.
-      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/otel-handler"
+      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/otel-instrument"
       OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
       OTEL_SERVICE_NAME                   = "workshop-auth-serverless"
       OTEL_SERVICE_VERSION                = var.service_version
