@@ -103,9 +103,15 @@ resource "aws_lambda_function" "auth" {
   filename         = var.lambda_artifact_path
   source_code_hash = filebase64sha256(var.lambda_artifact_path)
   memory_size      = 1024
-  timeout          = 20
-  publish          = true
-  layers           = [var.adot_layer_arn]
+
+  # O wrapper da layer ADOT reserva dez segundos para o flush final da
+  # telemetria (OTEL_INSTRUMENTATION_AWS_LAMBDA_FLUSH_TIMEOUT). Com o limite em
+  # vinte segundos a funcao respondia em cerca de um segundo e ficava os dez
+  # restantes bloqueada no flush, que era abortado junto com a invocacao: as
+  # duracoes ficavam cravadas em 10.010 ms e nada chegava a New Relic.
+  timeout = 40
+  publish = true
+  layers  = [var.adot_layer_arn]
   tracing_config { mode = "Active" }
 
   vpc_config {
@@ -147,6 +153,13 @@ resource "aws_lambda_function" "auth" {
       # Application Signals defaults to true and would ship a duplicate copy of
       # the telemetry to CloudWatch/X-Ray. W5 targets New Relic only.
       OTEL_AWS_APPLICATION_SIGNALS_ENABLED = "false"
+
+      # Exporta em lotes menores e mais frequentes para que o flush termine
+      # dentro da janela, em vez de acumular ate o fim da invocacao.
+      OTEL_BSP_SCHEDULE_DELAY        = "1000"
+      OTEL_BSP_MAX_EXPORT_BATCH_SIZE = "64"
+      OTEL_METRIC_EXPORT_INTERVAL    = "5000"
+      OTEL_EXPORTER_OTLP_TIMEOUT     = "8000"
     }
   }
 
