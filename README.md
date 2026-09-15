@@ -1,30 +1,228 @@
 # workshop-auth-serverless
 
-Parte da entrega da **Fase 3** do Tech Challenge (SOAT).
-Repositorio segregado conforme o plano de orquestracao.
+> Autenticacao **serverless por CPF** da **Fase 3** do Tech Challenge (SOAT): uma
+> funcao Lambda Java 21 que valida o CPF, confirma a elegibilidade do cliente no RDS e
+> emite um **JWT**. Este repositorio tambem provisiona o **API Gateway HTTP**, que e a
+> **borda unica** da solucao — roteia `/api/auth/cpf` para a Lambda e todo o restante
+> para a aplicacao no EKS via VPC Link.
 
-## Estado
+---
 
-Esqueleto inicial. O conteudo e entregue nas ondas seguintes do plano.
+## Proposito
 
-Os preflights executáveis dos riscos da W0 estão em
-[`docs/w0-spikes.md`](docs/w0-spikes.md). Eles são acionados manualmente, usam recursos
-temporários e não fazem parte da CI comum.
+O requisito da Fase 3 e identificar o cliente por CPF antes de permitir o uso da API de
+oficina, sem manter um servidor de autenticacao dedicado. A solucao:
 
-## State remoto da W4
+1. **Valida o CPF** localmente (formato e digitos verificadores) — CPF invalido nunca
+   chega ao banco;
+2. **Consulta a elegibilidade** do cliente no RDS PostgreSQL, com a Lambda anexada as
+   subnets privadas da VPC;
+3. **Emite um JWT** assinado com o segredo compartilhado, no contrato definido pelo
+   ADR-004, consumido pela aplicacao no EKS;
+4. **Exporta telemetria** (traces, metricas e logs) via OpenTelemetry para o New Relic.
 
-O Terraform serverless guarda seu state em S3, na chave
-`serverless/terraform.tfstate`, e usa uma tabela DynamoDB para lock. Antes de executar
-o workflow **W4 — Serverless CI, plan e deploy** manualmente, crie estas *Environment
-variables* no environment GitHub `prod` (não são secrets):
+Alem do codigo, o repositorio provisiona a borda: uma unica URL publica atende tanto a
+autenticacao quanto a API de negocio, sem expor o cluster diretamente.
 
-- `TFSTATE_BUCKET`: bucket S3 que já contém os states `cluster/terraform.tfstate` e
+### Fronteira
+
+| | |
+|---|---|
+| **Contem** | Codigo da Lambda, API Gateway HTTP, VPC Link, SGs da Lambda e do link, alias `prod`, log groups |
+| **Nao contem** | VPC/EKS (em [workshop-infra-kubernetes](https://github.com/postech-software-architecture/workshop-infra-kubernetes)), RDS (em [workshop-infra-database](https://github.com/postech-software-architecture/workshop-infra-database)) — ambos **lidos** via contrato de outputs |
+
+---
+
+## Tecnologias utilizadas
+
+| Camada | Tecnologia |
+|---|---|
+| Runtime | **Java 21** em AWS Lambda, empacotado como fat JAR (`maven-shade-plugin` → `function.zip`) |
+| Entrada | `aws-lambda-java-core` / `aws-lambda-java-events` (`APIGatewayV2HTTPEvent`) |
+| JWT | **JJWT 0.12.6** (`jjwt-api`, `jjwt-impl`, `jjwt-jackson`) |
+| Banco | **PostgreSQL** via JDBC (`postgresql` 42.7.4), acesso somente leitura a elegibilidade |
+| Serializacao | Jackson Databind 2.18.2 |
+| Observabilidade | **OpenTelemetry API** 1.45 + camada **ADOT** (`/opt/otel-instrument`) exportando OTLP `http/protobuf` para o New Relic |
+| Testes | JUnit 5.11 + AssertJ 3.27 (`maven-surefire-plugin`) |
+| Infraestrutura | **Terraform** (`~> 5.60` AWS provider), backend S3 + lock DynamoDB |
+| Borda | **API Gateway HTTP (v2)** + **VPC Link** para o NLB interno do EKS |
+| CI/CD | GitHub Actions (`ci.yml`, `w4-serverless.yml`, `w0-spikes.yml`) |
+
+---
+
+## Estrutura
+
+```text
+src/main/java/com/postech/auth/
+├── handler/      → AuthHandler (entrada Lambda, orquestra o fluxo e a telemetria)
+├── cpf/          → Documento, ValidadorCpf, TipoDocumento (validacao pura)
+├── repository/   → AutenticacaoRepository (consulta de elegibilidade no RDS)
+├── token/        → EmissorJwt (emissao do JWT no contrato do ADR-004)
+└── telemetry/    → Telemetry (metricas, logs estruturados e correlation id)
+
+infra/            → Terraform da Lambda, API Gateway, VPC Link e SGs
+docs/             → openapi-auth.yaml e w0-spikes.md
+scripts/spikes/   → preflights manuais da W0 (LabRole, VPC Link/NLB, ingestao OTLP)
+```
+
+### Roteamento da borda
+
+| Rota | Integracao | Destino |
+|---|---|---|
+| `POST /api/auth/cpf` | `AWS_PROXY` | Alias `prod` da Lambda de autenticacao |
+| `$default` (todas as demais) | `HTTP_PROXY` + VPC Link | NLB interno → aplicacao no EKS |
+
+O stage `prod` tem `auto_deploy`, throttling configuravel (`api_throttling_rate_limit`
+e `api_throttling_burst_limit`) e access logs estruturados em JSON no CloudWatch.
+
+---
+
+## Como executar
+
+### Pre-requisitos
+
+**Java 21**, **Maven 3.9+**, **Terraform >= 1.6** e credenciais temporarias do AWS
+Academy (incluem `AWS_SESSION_TOKEN` e expiram em ~4h).
+
+### 1. Build e testes locais
+
+```bash
+git clone git@github.com:postech-software-architecture/workshop-auth-serverless.git
+cd workshop-auth-serverless
+
+mvn test                      # testes unitarios (validacao de CPF, JWT, handler, telemetria)
+mvn package                   # gera target/function.zip (artefato de deploy)
+```
+
+O `maven-shade-plugin` empacota o fat JAR diretamente como `target/function.zip`, que e
+o `lambda_artifact_path` consumido pelo Terraform.
+
+### 2. Validacao estatica do Terraform (sem credenciais)
+
+```bash
+cd infra
+terraform fmt -check
+terraform init -backend=false
+terraform validate
+```
+
+### 3. Deploy
+
+O deploy **nao acontece em pull requests**. Ele exige execucao manual do workflow
+**W4 — Serverless CI, plan e deploy**, Environment `prod` e a confirmacao literal
+`APLICAR SERVERLESS PROD`.
+
+**Ordem obrigatoria:** o cluster e o banco precisam existir antes, pois este repositorio
+le os outputs de ambos via `terraform_remote_state`.
+
+```text
+workshop-infra-kubernetes (apply) → workshop-infra-database (apply) → este repositorio
+```
+
+Antes do primeiro deploy, crie no Environment `prod` as *Environment variables*
+(nao sao secrets):
+
+- `TFSTATE_BUCKET` — bucket S3 que ja contem `cluster/terraform.tfstate` e
   `database/terraform.tfstate`;
-- `TFSTATE_LOCK_TABLE`: tabela DynamoDB de lock do Terraform para esse bucket.
+- `TFSTATE_LOCK_TABLE` — tabela DynamoDB de lock do Terraform para esse bucket.
 
-O workflow valida ambas antes de `terraform init`, configura seu backend com elas e
-também as fornece como os buckets de state do cluster e do banco. Não registre valores
-reais de bucket, tabela, credenciais ou senhas neste repositório.
+O workflow valida ambas antes do `terraform init`, configura o backend com elas
+(chave `serverless/terraform.tfstate`) e tambem as fornece como buckets de state do
+cluster e do banco.
+
+Secrets necessarios no Environment `prod`:
+
+| Secret / variavel | Uso |
+|---|---|
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Credenciais Academy |
+| `TF_VAR_db_password` | Senha do RDS — a **mesma** consumida pelo k8s Secret |
+| `TF_VAR_jwt_secret` | Segredo de assinatura do JWT, compartilhado com a aplicacao |
+| `TF_VAR_adot_layer_arn` | ARN regional da camada ADOT Java compativel com Java 21 |
+| `TF_VAR_new_relic_api_key` | Chave de ingestao do New Relic |
+| `TF_VAR_service_version` | SHA do commit implantado (injetado pela pipeline) |
+
+`TF_VAR_new_relic_otlp_endpoint` e opcional e usa `https://otlp.nr-data.net` por padrao.
+Nunca commite `.tfvars` com segredos. Detalhes de observabilidade em
+[`infra/README.md`](infra/README.md).
+
+### 4. Execucao manual local (opcional)
+
+```bash
+cd infra
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_SESSION_TOKEN=...
+export TF_VAR_db_password='...' TF_VAR_jwt_secret='...' TF_VAR_adot_layer_arn='...'
+export TF_VAR_new_relic_api_key='...' TF_VAR_service_version="$(git rev-parse HEAD)"
+
+terraform init && terraform plan
+terraform apply
+terraform output api_gateway_url
+```
+
+### 5. Validacao pos-deploy
+
+```bash
+API_URL=$(terraform output -raw api_gateway_url)
+
+# CPF elegivel -> 200 com JWT
+curl -X POST "$API_URL/api/auth/cpf" \
+  -H 'Content-Type: application/json' \
+  -d '{"cpf":"123.456.789-09"}'
+
+# CPF invalido -> 422
+curl -X POST "$API_URL/api/auth/cpf" \
+  -H 'Content-Type: application/json' \
+  -d '{"cpf":"111.111.111-11"}'
+```
+
+### Preflights da W0
+
+Os preflights executaveis dos riscos da W0 estao em
+[`docs/w0-spikes.md`](docs/w0-spikes.md). Sao acionados manualmente
+(`w0-spikes.yml`), usam recursos temporarios e **nao** fazem parte da CI comum.
+
+---
+
+## Diagrama da arquitetura
+
+<!-- TODO: inserir o diagrama da arquitetura serverless deste repositorio
+     (Cliente → API Gateway → {Lambda auth | VPC Link → NLB → EKS} → RDS, com
+     export OTLP para o New Relic). Sugestao: versionar em docs/diagrams/. -->
+
+```text
+[ reservado para o diagrama da arquitetura serverless de autenticacao ]
+```
+
+---
+
+## API — Swagger / Postman
+
+Especificacao OpenAPI 3.0: [`docs/openapi-auth.yaml`](docs/openapi-auth.yaml)
+
+### `POST /api/auth/cpf`
+
+**Request**
+
+```json
+{ "cpf": "123.456.789-09" }
+```
+
+**Respostas**
+
+| Status | Significado |
+|---|---|
+| `200` | JWT emitido |
+| `401` | Cliente nao elegivel |
+| `422` | CPF invalido (formato ou digitos verificadores) |
+| `500` | Erro interno |
+| `503` | Banco de dados indisponivel |
+
+Para visualizar em Swagger UI, cole o conteudo de `docs/openapi-auth.yaml` no
+[Swagger Editor](https://editor.swagger.io/). O arquivo tambem pode ser importado
+diretamente no Postman (*Import → File → OpenAPI 3.0*).
+
+<!-- TODO: adicionar link da collection Postman publicada, se houver. -->
+
+---
 
 ## Agentes
 
