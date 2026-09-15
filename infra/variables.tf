@@ -57,7 +57,11 @@ variable "db_name" {
 variable "lambda_handler" {
   type        = string
   description = "Handler implemented by the W4 auth core/handler PRs."
-  default     = "com.postech.auth.handler.AuthHandler::handleRequest"
+  # Apenas a classe, sem o sufixo ::handleRequest. A instrumentacao aws-lambda
+  # do agente OpenTelemetry reconhece o handler pela classe; com o metodo
+  # explicito ela nao carrega e nenhum span e gerado, embora metricas e logs
+  # continuem sendo exportados normalmente.
+  default = "com.postech.auth.handler.AuthHandler"
 }
 
 variable "adot_layer_arn" {
