@@ -154,6 +154,15 @@ resource "aws_lambda_function" "auth" {
       # the telemetry to CloudWatch/X-Ray. W5 targets New Relic only.
       OTEL_AWS_APPLICATION_SIGNALS_ENABLED = "false"
 
+      # A Lambda injeta _X_AMZN_TRACE_ID com Sampled=0 e o wrapper da camada
+      # inclui o propagador xray, que aceita esse valor como um pai valido e
+      # nao amostrado. O sampler padrao, parentbased_always_on, respeita o pai
+      # e descarta o span raiz: os spans sao criados, nunca gravados e nunca
+      # exportados, o que explica o agente exportar logs e metricas e nunca
+      # traces. always_on ignora a decisao do pai e preserva a continuidade de
+      # contexto com o API Gateway, que remover o propagador xray quebraria.
+      OTEL_TRACES_SAMPLER = "always_on"
+
       # Exporta em lotes menores e mais frequentes para que o flush termine
       # dentro da janela, em vez de acumular ate o fim da invocacao.
       OTEL_BSP_SCHEDULE_DELAY        = "1000"
