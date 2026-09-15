@@ -71,8 +71,8 @@ variable "adot_layer_arn" {
 
 variable "new_relic_otlp_endpoint" {
   type        = string
-  description = "New Relic OTLP/gRPC endpoint, without credentials."
-  default     = "https://otlp.nr-data.net:4317"
+  description = "New Relic OTLP/HTTP endpoint, without credentials."
+  default     = "https://otlp.nr-data.net:4318"
   validation {
     condition     = can(regex("^https://", var.new_relic_otlp_endpoint))
     error_message = "new_relic_otlp_endpoint must use HTTPS."

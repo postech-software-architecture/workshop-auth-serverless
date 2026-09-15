@@ -17,7 +17,7 @@ ambiente local seguro. Não commite `.tfvars` com segredos.
 - `TF_VAR_service_version`: SHA hexadecimal do commit implantado.
 
 `TF_VAR_new_relic_otlp_endpoint` é opcional e usa
-`https://otlp.nr-data.net:4317` por padrão. A pipeline injeta o SHA da execução
+`https://otlp.nr-data.net:4318` por padrão. A pipeline injeta o SHA da execução
 e valida o ARN e o endpoint antes de executar `plan` ou `apply`.
 
 O workflow continua sem deploy em pull requests. O deploy exige execução manual,
