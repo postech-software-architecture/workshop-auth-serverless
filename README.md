@@ -46,7 +46,7 @@ autenticacao quanto a API de negocio, sem expor o cluster diretamente.
 | Testes | JUnit 5.11 + AssertJ 3.27 (`maven-surefire-plugin`) |
 | Infraestrutura | **Terraform** (`~> 5.60` AWS provider), backend S3 + lock DynamoDB |
 | Borda | **API Gateway HTTP (v2)** + **VPC Link** para o NLB interno do EKS |
-| CI/CD | GitHub Actions (`ci.yml`, `w4-serverless.yml`, `w0-spikes.yml`) |
+| CI/CD | GitHub Actions (`ci.yml`, `cd.yml`, `w0-spikes.yml`) |
 
 ---
 
@@ -63,6 +63,15 @@ src/main/java/com/postech/auth/
 infra/            → Terraform da Lambda, API Gateway, VPC Link e SGs
 docs/             → openapi-auth.yaml e w0-spikes.md
 scripts/spikes/   → preflights manuais da W0 (LabRole, VPC Link/NLB, ingestao OTLP)
+
+.github/
+├── workflows/
+│   ├── ci.yml        → push e PR: build, testes e pacote; fmt, validate e guard
+│   ├── cd.yml        → manual: plan, apply ou destroy
+│   ├── _build.yml    → workflow reutilizavel do build, chamado pela CI e pelo CD
+│   └── w0-spikes.yml → preflights manuais da W0
+└── actions/terraform-backend/
+                      → action composta: credencial AWS, pre-voo e terraform init
 ```
 
 ### Roteamento da borda
@@ -81,8 +90,9 @@ e `api_throttling_burst_limit`) e access logs estruturados em JSON no CloudWatch
 
 ### Pre-requisitos
 
-**Java 21**, **Maven 3.9+**, **Terraform >= 1.6** e credenciais temporarias do AWS
-Academy (incluem `AWS_SESSION_TOKEN` e expiram em ~4h).
+**Java 21**, **Maven 3.9+**, **Terraform >= 1.9** (exigido por `infra/versions.tf`; a
+pipeline usa 1.9.8) e credenciais temporarias do AWS Academy (incluem
+`AWS_SESSION_TOKEN` e expiram em ~4h).
 
 ### 1. Build e testes locais
 
@@ -108,9 +118,15 @@ terraform validate
 
 ### 3. Deploy
 
-O deploy **nao acontece em pull requests**. Ele exige execucao manual do workflow
-**W4 — Serverless CI, plan e deploy**, Environment `prod` e a confirmacao literal
-`APLICAR SERVERLESS PROD`.
+O deploy **nao acontece em pull requests**. Ele exige execucao manual: Actions →
+**CD — serverless prod** → *Run workflow*, com `action = apply`, Environment `prod` e
+a confirmacao literal `APLICAR SERVERLESS PROD`. O mesmo workflow aceita
+`action = plan`, que nao exige confirmacao e publica o plano sanitizado como artefato,
+e `action = destroy`, que exige `DESTRUIR SERVERLESS PROD`.
+
+O `apply` termina com um smoke test que exige HTTP 422 em `POST /api/auth/cpf` com CPF
+invalido. O `destroy` bloqueia a execucao se o plano tocar em qualquer recurso
+`aws_eks_*` ou `aws_db_*`, preservando a fronteira entre os repositorios.
 
 **Ordem obrigatoria:** o cluster e o banco precisam existir antes, pois este repositorio
 le os outputs de ambos via `terraform_remote_state`.
@@ -122,28 +138,43 @@ workshop-infra-kubernetes (apply) → workshop-infra-database (apply) → este r
 Antes do primeiro deploy, crie no Environment `prod` as *Environment variables*
 (nao sao secrets):
 
-- `TFSTATE_BUCKET` — bucket S3 que ja contem `cluster/terraform.tfstate` e
-  `database/terraform.tfstate`;
-- `TFSTATE_LOCK_TABLE` — tabela DynamoDB de lock do Terraform para esse bucket.
-
-O workflow valida ambas antes do `terraform init`, configura o backend com elas
-(chave `serverless/terraform.tfstate`) e tambem as fornece como buckets de state do
-cluster e do banco.
-
-Secrets necessarios no Environment `prod`:
-
-| Secret / variavel | Uso |
+| Variavel | Uso |
 |---|---|
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Credenciais Academy |
-| `TF_VAR_db_password` | Senha do RDS — a **mesma** consumida pelo k8s Secret |
-| `TF_VAR_jwt_secret` | Segredo de assinatura do JWT, compartilhado com a aplicacao |
-| `TF_VAR_adot_layer_arn` | ARN regional da camada ADOT Java compativel com Java 21 |
-| `TF_VAR_new_relic_api_key` | Chave de ingestao do New Relic |
-| `TF_VAR_service_version` | SHA do commit implantado (injetado pela pipeline) |
+| `TFSTATE_BUCKET` | Bucket S3 que ja contem `cluster/terraform.tfstate` e `database/terraform.tfstate` |
+| `TFSTATE_LOCK_TABLE` | Tabela DynamoDB de lock do Terraform para esse bucket |
+| `AWS_REGION` | Regiao do lab; default `us-east-1` |
+| `ADOT_LAYER_ARN` | ARN regional da camada ADOT Java compativel com Java 21 |
+| `NEW_RELIC_OTLP_ENDPOINT` | Opcional; default `https://otlp.nr-data.net` |
 
-`TF_VAR_new_relic_otlp_endpoint` e opcional e usa `https://otlp.nr-data.net` por padrao.
-Nunca commite `.tfvars` com segredos. Detalhes de observabilidade em
+O workflow valida `TFSTATE_BUCKET` e `TFSTATE_LOCK_TABLE` antes do `terraform init`,
+configura o backend com elas (chave `serverless/terraform.tfstate`) e tambem as fornece
+como buckets de state do cluster e do banco.
+
+E os *secrets*, tambem no Environment `prod`. O nome do secret nao e o nome da variavel
+Terraform: o workflow faz o mapeamento.
+
+| Secret | Variavel Terraform | Uso |
+|---|---|---|
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | — | Credenciais Academy |
+| `DB_PASSWORD` | `db_password` | Senha do RDS — a **mesma** consumida pelo k8s Secret |
+| `JWT_SECRET` | `jwt_secret` | Segredo de assinatura do JWT, compartilhado com a aplicacao |
+| `NEW_RELIC_LICENSE_KEY` | `new_relic_api_key` | Chave de ingestao do New Relic |
+
+`service_version` nao e configuravel: a pipeline injeta o SHA do commit em execucao.
+
+Nunca commite `.tfvars` com segredos — o arquivo esta no `.gitignore`. Para rodar o
+Terraform localmente, copie
+[`infra/terraform.tfvars.example`](infra/terraform.tfvars.example) para
+`infra/terraform.tfvars` e preencha. Detalhes de observabilidade em
 [`infra/README.md`](infra/README.md).
+
+#### Credencial do AWS Academy expirada
+
+A sessao do lab dura cerca de quatro horas. Quando expira, o `terraform init` falha com
+um `HeadObject 403 Forbidden` do S3 que nao menciona credencial nenhuma. O pre-voo da
+action composta separa os casos — sessao invalida, state ainda inexistente e acesso
+negado — e diz o que fazer. Para renovar: abra o lab, copie o bloco *AWS CLI* e
+atualize os tres secrets `AWS_*` do Environment.
 
 ### 4. Execucao manual local (opcional)
 

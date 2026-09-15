@@ -1,0 +1,150 @@
+name: Terraform backend
+description: >-
+  Instala o Terraform, configura a credencial temporaria da AWS, roda o pre-voo
+  que distingue sessao expirada de state inexistente e executa o terraform init
+  contra o backend S3 remoto.
+
+inputs:
+  aws-access-key-id:
+    description: Secret AWS_ACCESS_KEY_ID do environment.
+    required: true
+  aws-secret-access-key:
+    description: Secret AWS_SECRET_ACCESS_KEY do environment.
+    required: true
+  aws-session-token:
+    description: Secret AWS_SESSION_TOKEN do environment (obrigatorio no AWS Academy).
+    required: true
+  aws-region:
+    description: Regiao AWS.
+    required: true
+  tfstate-bucket:
+    description: Bucket S3 que guarda os states do projeto.
+    required: true
+  tfstate-lock-table:
+    description: Tabela DynamoDB de lock do Terraform.
+    required: true
+  tfstate-key:
+    description: Chave do state deste componente dentro do bucket.
+    required: false
+    default: serverless/terraform.tfstate
+  terraform-version:
+    description: Versao do Terraform a instalar.
+    required: false
+    default: 1.9.8
+  validate-observability:
+    description: >-
+      Quando 'true', exige ADOT_LAYER_ARN, NEW_RELIC_OTLP_ENDPOINT e
+      NEW_RELIC_LICENSE_KEY. O destroy nao precisa deles porque usa placeholders.
+    required: false
+    default: 'true'
+  adot-layer-arn:
+    description: ARN regional da camada ADOT Java.
+    required: false
+    default: ''
+  new-relic-otlp-endpoint:
+    description: Endpoint OTLP do New Relic.
+    required: false
+    default: ''
+  new-relic-license-key:
+    description: Secret de ingestao do New Relic.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: hashicorp/setup-terraform@v4
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: Validar configuracao do state remoto
+      shell: bash
+      env:
+        TFSTATE_BUCKET: ${{ inputs.tfstate-bucket }}
+        TFSTATE_LOCK_TABLE: ${{ inputs.tfstate-lock-table }}
+      run: |
+        set -euo pipefail
+        test -n "${TFSTATE_BUCKET:-}" || {
+          echo '::error::Variavel de environment TFSTATE_BUCKET ausente.' >&2; exit 1; }
+        test -n "${TFSTATE_LOCK_TABLE:-}" || {
+          echo '::error::Variavel de environment TFSTATE_LOCK_TABLE ausente.' >&2; exit 1; }
+
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-access-key-id: ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        aws-session-token: ${{ inputs.aws-session-token }}
+        aws-region: ${{ inputs.aws-region }}
+
+    # O terraform init falha com um 403 cru do S3 quando a sessao do AWS Academy
+    # expira, o que e indistinguivel de um bucket errado. Este pre-voo separa os
+    # tres casos e diz o que fazer em cada um.
+    - name: Pre-voo da credencial e do state
+      shell: bash
+      env:
+        TFSTATE_BUCKET: ${{ inputs.tfstate-bucket }}
+        TFSTATE_KEY: ${{ inputs.tfstate-key }}
+      run: |
+        set -euo pipefail
+
+        if ! account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"; then
+          echo '::error::Credencial AWS invalida ou expirada. A sessao do AWS Academy dura cerca de quatro horas: abra o lab, copie o bloco AWS CLI e atualize os secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY e AWS_SESSION_TOKEN no environment usado por este job.' >&2
+          exit 1
+        fi
+        echo "Conta AWS autenticada: ${account}"
+
+        set +e
+        head_error="$(aws s3api head-object --bucket "$TFSTATE_BUCKET" --key "$TFSTATE_KEY" 2>&1 >/dev/null)"
+        head_status=$?
+        set -e
+
+        if [ "$head_status" -eq 0 ]; then
+          echo "State encontrado em s3://${TFSTATE_BUCKET}/${TFSTATE_KEY}"
+          exit 0
+        fi
+
+        case "$head_error" in
+          *404*|*'Not Found'*)
+            echo "::notice::State ${TFSTATE_KEY} ainda nao existe em ${TFSTATE_BUCKET}; o primeiro apply cria o objeto."
+            ;;
+          *403*|*Forbidden*|*AccessDenied*)
+            echo "::error::Sem acesso a s3://${TFSTATE_BUCKET}/${TFSTATE_KEY} (403). A conta autenticada e ${account}. As duas causas comuns sao a sessao do AWS Academy expirada e um TFSTATE_BUCKET que pertence a outra conta do lab. Atualize os secrets AWS_* e confira a variavel TFSTATE_BUCKET do environment." >&2
+            exit 1
+            ;;
+          *)
+            echo "::error::Falha ao consultar s3://${TFSTATE_BUCKET}/${TFSTATE_KEY}: ${head_error}" >&2
+            exit 1
+            ;;
+        esac
+
+    - name: Validar pre-requisitos ADOT e New Relic
+      if: inputs.validate-observability == 'true'
+      shell: bash
+      env:
+        ADOT_LAYER_ARN: ${{ inputs.adot-layer-arn }}
+        NEW_RELIC_OTLP_ENDPOINT: ${{ inputs.new-relic-otlp-endpoint }}
+        NEW_RELIC_LICENSE_KEY: ${{ inputs.new-relic-license-key }}
+      run: |
+        set -euo pipefail
+        [[ "$ADOT_LAYER_ARN" =~ ^arn:[^:]+:lambda:[^:]+:[0-9]{12}:layer:[^:]+:[0-9]+$ ]] || {
+          echo '::error::Variavel ADOT_LAYER_ARN ausente ou invalida.' >&2; exit 1; }
+        [[ "$NEW_RELIC_OTLP_ENDPOINT" == https://* ]] || {
+          echo '::error::Variavel NEW_RELIC_OTLP_ENDPOINT deve usar HTTPS.' >&2; exit 1; }
+        test -n "$NEW_RELIC_LICENSE_KEY" || {
+          echo '::error::Secret NEW_RELIC_LICENSE_KEY ausente.' >&2; exit 1; }
+
+    - name: Terraform init
+      shell: bash
+      env:
+        TFSTATE_BUCKET: ${{ inputs.tfstate-bucket }}
+        TFSTATE_LOCK_TABLE: ${{ inputs.tfstate-lock-table }}
+        TFSTATE_KEY: ${{ inputs.tfstate-key }}
+        AWS_REGION: ${{ inputs.aws-region }}
+      run: |
+        set -euo pipefail
+        terraform -chdir=infra init -input=false \
+          -backend-config="bucket=${TFSTATE_BUCKET}" \
+          -backend-config="key=${TFSTATE_KEY}" \
+          -backend-config="region=${AWS_REGION}" \
+          -backend-config="dynamodb_table=${TFSTATE_LOCK_TABLE}"

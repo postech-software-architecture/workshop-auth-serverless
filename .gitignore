@@ -9,8 +9,17 @@ target/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+# O plano binario carrega os valores das variaveis sensiveis (db_password,
+# jwt_secret, new_relic_api_key). Nunca deve ser versionado.
+tfplan
+*.tfplan
+errored.tfstate
 
 # credenciais
 .env
 .env.local
 *.pem
+
+# IDE
+.idea/
+.vscode/
