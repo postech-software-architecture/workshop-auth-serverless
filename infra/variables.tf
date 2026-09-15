@@ -72,7 +72,10 @@ variable "adot_layer_arn" {
 variable "new_relic_otlp_endpoint" {
   type        = string
   description = "New Relic OTLP/HTTP endpoint, without credentials."
-  default     = "https://otlp.nr-data.net:4318"
+  # Sem porta explicita o SDK usa 443, que e a unica saida HTTPS liberada no
+  # security group. A porta 4318 exigiria abrir egress adicional sem ganho: a
+  # New Relic serve o mesmo OTLP/HTTP nas duas.
+  default = "https://otlp.nr-data.net"
   validation {
     condition     = can(regex("^https://", var.new_relic_otlp_endpoint))
     error_message = "new_relic_otlp_endpoint must use HTTPS."
