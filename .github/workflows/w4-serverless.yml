@@ -284,6 +284,7 @@ jobs:
           fi
           test -n "$API_GATEWAY_URL"
           echo "API_GATEWAY_URL=$API_GATEWAY_URL" >> "$GITHUB_STEP_SUMMARY"
+          smoke_url="${API_GATEWAY_URL%/}/api/auth/cpf"
           response="$(curl --silent --show-error --write-out '\n%{http_code}' --max-time 15 -X POST "$smoke_url" -H 'content-type: application/json' --data '{"cpf":"11111111111"}')"
           status="$(echo "$response" | tail -n 1)"
           body="$(echo "$response" | sed '$d')"
