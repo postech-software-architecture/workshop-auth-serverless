@@ -26,6 +26,26 @@ public final class AuthHandler implements RequestHandler<APIGatewayV2HTTPEvent, 
 
     @Override
     public APIGatewayV2HTTPResponse handleRequest(APIGatewayV2HTTPEvent event, Context context) {
+        long startedAt = System.nanoTime();
+        APIGatewayV2HTTPResponse response = null;
+        try {
+            response = authenticate(event, context);
+            return response;
+        }
+        finally {
+            double millis = (System.nanoTime() - startedAt) / 1_000_000.0;
+            Telemetry.cpfDuration(millis, response == null ? "error" : outcomeOf(response.getStatusCode()));
+        }
+    }
+
+    private static String outcomeOf(int status) {
+        if (status < 300) {
+            return "success";
+        }
+        return status < 500 ? "rejected" : "error";
+    }
+
+    private APIGatewayV2HTTPResponse authenticate(APIGatewayV2HTTPEvent event, Context context) {
         String correlationId = correlation(event);
         Telemetry.log("request", correlationId, Map.of("operation", "authenticate_cpf"));
         Telemetry.cpfAttempt("received");

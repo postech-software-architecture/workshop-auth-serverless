@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.metrics.DoubleHistogram;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.api.logs.Logger;
@@ -22,6 +23,7 @@ public final class Telemetry {
     public static final String CPF_ATTEMPT = "workshop.auth.cpf.attempt.count";
     public static final String CPF_FAILURE = "workshop.auth.cpf.failure.count";
     public static final String DATABASE_ERROR = "workshop.auth.database.error.count";
+    public static final String CPF_DURATION = "workshop.auth.cpf.duration";
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final AttributeKey<String> OUTCOME = AttributeKey.stringKey("outcome");
@@ -34,12 +36,26 @@ public final class Telemetry {
     private static final LongCounter CPF_ATTEMPTS = counter(CPF_ATTEMPT, "CPF authentication attempts");
     private static final LongCounter CPF_FAILURES = counter(CPF_FAILURE, "CPF authentication failures");
     private static final LongCounter DATABASE_ERRORS = counter(DATABASE_ERROR, "Database errors during authentication");
+    private static final DoubleHistogram CPF_DURATIONS = METER.histogramBuilder(CPF_DURATION)
+            .setDescription("Duration of the CPF authentication handler")
+            .setUnit("ms")
+            .build();
 
     private Telemetry() {
     }
 
     private static LongCounter counter(String name, String description) {
         return METER.counterBuilder(name).setDescription(description).setUnit("{request}").build();
+    }
+
+    /**
+     * Registra a duracao da invocacao como metrica. A camada produz o span da invocacao,
+     * mas ele nao atravessa o export OTLP para a New Relic, enquanto metricas e logs do
+     * mesmo endpoint chegam sem erro. Emitir a duracao como metrica mantem o painel de
+     * latencia alimentado por um sinal que comprovadamente chega.
+     */
+    public static void cpfDuration(double millis, String outcome) {
+        CPF_DURATIONS.record(millis, Attributes.of(OUTCOME, safeTag(outcome)));
     }
 
     public static void cpfAttempt(String outcome) {
