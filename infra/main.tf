@@ -163,18 +163,20 @@ resource "aws_lambda_function" "auth" {
       # contexto com o API Gateway, que remover o propagador xray quebraria.
       OTEL_TRACES_SAMPLER = "always_on"
 
-      # O span raiz passa a ser aberto pela fachada Telemetry, porque a camada
-      # nao instrumenta handlers de APIGatewayV2HTTPEvent nesta versao. Desligar
-      # a instrumentacao do handler evita dois spans SERVER aninhados por
-      # invocacao caso ela volte a reconhecer o evento.
-      OTEL_INSTRUMENTATION_AWS_LAMBDA_ENABLED = "false"
+      # A instrumentacao do handler fica ligada porque e ela que faz o flush no
+      # fim da invocacao. Desligada, o processo congela apos a resposta e o
+      # BatchSpanProcessor nunca envia: o span aparece no log com trace.id, mas
+      # nunca chega a New Relic. Ela nao duplica o span da fachada porque nao
+      # reconhece APIGatewayV2HTTPEvent nesta versao da camada.
+      OTEL_INSTRUMENTATION_AWS_LAMBDA_ENABLED = "true"
 
-      # Exporta em lotes menores e mais frequentes para que o flush termine
-      # dentro da janela, em vez de acumular ate o fim da invocacao.
-      OTEL_BSP_SCHEDULE_DELAY        = "1000"
-      OTEL_BSP_MAX_EXPORT_BATCH_SIZE = "64"
-      OTEL_METRIC_EXPORT_INTERVAL    = "5000"
-      OTEL_EXPORTER_OTLP_TIMEOUT     = "8000"
+      # Exporta cada lote assim que fecha, em vez de aguardar o intervalo do
+      # processador em lote, que a invacacao congelada nunca alcanca.
+      OTEL_BSP_SCHEDULE_DELAY        = "200"
+      OTEL_BSP_MAX_EXPORT_BATCH_SIZE = "1"
+
+      OTEL_METRIC_EXPORT_INTERVAL = "5000"
+      OTEL_EXPORTER_OTLP_TIMEOUT  = "8000"
     }
   }
 
