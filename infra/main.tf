@@ -163,6 +163,12 @@ resource "aws_lambda_function" "auth" {
       # contexto com o API Gateway, que remover o propagador xray quebraria.
       OTEL_TRACES_SAMPLER = "always_on"
 
+      # O span raiz passa a ser aberto pela fachada Telemetry, porque a camada
+      # nao instrumenta handlers de APIGatewayV2HTTPEvent nesta versao. Desligar
+      # a instrumentacao do handler evita dois spans SERVER aninhados por
+      # invocacao caso ela volte a reconhecer o evento.
+      OTEL_INSTRUMENTATION_AWS_LAMBDA_ENABLED = "false"
+
       # Exporta em lotes menores e mais frequentes para que o flush termine
       # dentro da janela, em vez de acumular ate o fim da invocacao.
       OTEL_BSP_SCHEDULE_DELAY        = "1000"
