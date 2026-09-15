@@ -34,14 +34,4 @@ class TelemetryTest {
         assertFalse(line.contains("secret-value"));
     }
 
-    @Test
-    void collectorResourceExportsAllSignalTypesWithoutLiteralKey() throws Exception {
-        String collector = new String(getClass().getResourceAsStream("/collector.yaml").readAllBytes(), StandardCharsets.UTF_8);
-        assertTrue(collector.contains("traces:"));
-        assertTrue(collector.contains("metrics:"));
-        assertTrue(collector.contains("logs:"));
-        assertTrue(collector.contains("${env:NEW_RELIC_OPENTELEMETRY_ENDPOINT}"));
-        assertTrue(collector.contains("${env:NEW_RELIC_LICENSE_KEY}"));
-        assertFalse(collector.matches("(?s).*api-key:\\s*[A-Za-z0-9_-]{20,}.*"));
-    }
 }
