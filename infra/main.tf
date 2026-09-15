@@ -94,23 +94,30 @@ resource "aws_lambda_function" "auth" {
       DB_PASSWORD = var.db_password
       JWT_SECRET  = var.jwt_secret
 
-      # ADOT Java agent and Lambda collector configuration. The API key is
+      # ADOT Java agent configuration. The AWSOpenTelemetryDistroJava layer ships
+      # only the Java agent and the otel-instrument wrapper: it has no embedded
+      # collector, so the SDK exports OTLP straight to New Relic. The API key is
       # held in a sensitive Terraform variable and is never exposed in an
       # output or log statement.
-      AWS_LAMBDA_EXEC_WRAPPER             = "/opt/otel-instrument"
-      OPENTELEMETRY_COLLECTOR_CONFIG_FILE = "/var/task/collector.yaml"
-      OTEL_SERVICE_NAME                   = "workshop-auth-serverless"
-      OTEL_SERVICE_VERSION                = var.service_version
-      OTEL_RESOURCE_ATTRIBUTES            = "service.name=workshop-auth-serverless,service.version=${var.service_version},deployment.environment=${var.deployment_environment}"
-      OTEL_TRACES_EXPORTER                = "otlp"
-      OTEL_METRICS_EXPORTER               = "otlp"
-      OTEL_LOGS_EXPORTER                  = "otlp"
-      # The Java SDK sends to the local ADOT collector. The collector then
-      # exports to New Relic using the endpoint and key below.
-      OTEL_EXPORTER_OTLP_ENDPOINT      = "http://localhost:4317"
-      OTEL_EXPORTER_OTLP_PROTOCOL      = "grpc"
-      NEW_RELIC_OPENTELEMETRY_ENDPOINT = var.new_relic_otlp_endpoint
-      NEW_RELIC_LICENSE_KEY            = var.new_relic_api_key
+      AWS_LAMBDA_EXEC_WRAPPER  = "/opt/otel-instrument"
+      OTEL_SERVICE_NAME        = "workshop-auth-serverless"
+      OTEL_SERVICE_VERSION     = var.service_version
+      OTEL_RESOURCE_ATTRIBUTES = "service.name=workshop-auth-serverless,service.version=${var.service_version},deployment.environment=${var.deployment_environment}"
+      OTEL_TRACES_EXPORTER     = "otlp"
+      OTEL_METRICS_EXPORTER    = "otlp"
+      OTEL_LOGS_EXPORTER       = "otlp"
+      # The SDK exports directly to New Relic over OTLP/HTTP protobuf, which New
+      # Relic recommends and which avoids gRPC connection setup on cold start.
+      # New Relic requires delta temporality for metrics.
+      OTEL_EXPORTER_OTLP_ENDPOINT                       = var.new_relic_otlp_endpoint
+      OTEL_EXPORTER_OTLP_PROTOCOL                       = "http/protobuf"
+      OTEL_EXPORTER_OTLP_HEADERS                        = "api-key=${var.new_relic_api_key}"
+      OTEL_EXPORTER_OTLP_COMPRESSION                    = "gzip"
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE = "delta"
+
+      # Application Signals defaults to true and would ship a duplicate copy of
+      # the telemetry to CloudWatch/X-Ray. W5 targets New Relic only.
+      OTEL_AWS_APPLICATION_SIGNALS_ENABLED = "false"
     }
   }
 

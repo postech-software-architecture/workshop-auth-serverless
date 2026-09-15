@@ -1,9 +1,11 @@
 # Observabilidade ADOT da Lambda
 
 O Terraform configura a função Java 21 com a camada AWS Distro for OpenTelemetry
-(ADOT), o wrapper Java e o collector empacotado em `collector.yaml`. O SDK da
-função envia traces, métricas e logs para o collector local; o collector envia
-os sinais ao endpoint OTLP do New Relic.
+(ADOT) e o wrapper `/opt/otel-instrument`. Essa camada traz apenas o agente Java
+— não há collector embutido —, portanto o SDK exporta traces, métricas e logs
+diretamente ao endpoint OTLP do New Relic, em `http/protobuf` com o header
+`api-key`. O Application Signals vem habilitado por padrão na camada e é
+desligado aqui para não duplicar a telemetria no CloudWatch/X-Ray.
 
 ## Variáveis obrigatórias
 
