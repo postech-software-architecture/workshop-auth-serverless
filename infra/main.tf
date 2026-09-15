@@ -56,6 +56,35 @@ resource "aws_security_group" "vpc_link" {
   }
 }
 
+# A Lambda anexa este grupo junto com o db_client_sg do cluster. Aquele grupo
+# existe para autorizar a origem no RDS e so libera saida na 5432, entao sozinho
+# ele impede o agente ADOT de alcancar o endpoint OTLP da New Relic: o export
+# falha por timeout, sem erro de credencial, e a telemetria se perde em silencio.
+# Criar o grupo aqui mantem a fronteira entre os repositorios e nao altera a
+# saida dos nodes do EKS, que compartilham o db_client_sg.
+resource "aws_security_group" "lambda" {
+  name                   = "${var.project}-auth-lambda-sg"
+  description            = "Egress security group for the CPF authentication Lambda"
+  vpc_id                 = local.vpc_id
+  revoke_rules_on_delete = true
+
+  egress {
+    description = "Export OTLP telemetry to New Relic over HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Reach the RDS instance inside the VPC"
+    from_port   = local.db_port
+    to_port     = local.db_port
+    protocol    = "tcp"
+    cidr_blocks = [data.terraform_remote_state.cluster.outputs.vpc_cidr]
+  }
+}
+
 resource "aws_cloudwatch_log_group" "lambda" {
   name              = "/aws/lambda/${var.project}-auth-cpf"
   retention_in_days = 7
@@ -81,7 +110,7 @@ resource "aws_lambda_function" "auth" {
 
   vpc_config {
     subnet_ids         = local.private_subnet_ids
-    security_group_ids = [local.db_client_sg_id]
+    security_group_ids = [local.db_client_sg_id, aws_security_group.lambda.id]
   }
 
   environment {
