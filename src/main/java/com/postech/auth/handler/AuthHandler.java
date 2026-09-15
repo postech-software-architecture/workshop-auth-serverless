@@ -9,8 +9,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.postech.auth.cpf.Documento;
 import com.postech.auth.repository.AutenticacaoRepository;
 import com.postech.auth.telemetry.Telemetry;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.context.Scope;
 import com.postech.auth.token.EmissorJwt;
 
 import java.sql.SQLException;
@@ -28,26 +26,6 @@ public final class AuthHandler implements RequestHandler<APIGatewayV2HTTPEvent, 
 
     @Override
     public APIGatewayV2HTTPResponse handleRequest(APIGatewayV2HTTPEvent event, Context context) {
-        APIGatewayV2HTTPEvent.RequestContext requestContext = event.getRequestContext();
-        APIGatewayV2HTTPEvent.RequestContext.Http http = requestContext == null ? null : requestContext.getHttp();
-        String method = http == null ? null : http.getMethod();
-        String route = requestContext == null ? null : requestContext.getRouteKey();
-        String spanName = method != null && route != null ? method + " " + route
-                : context == null ? Telemetry.SERVICE_NAME : context.getFunctionName();
-        Span span = Telemetry.startInvocation(spanName, event.getHeaders(), correlation(event),
-                context == null ? null : context.getAwsRequestId(), method, route);
-        try (Scope scope = Telemetry.activate(span)) {
-            APIGatewayV2HTTPResponse response = authenticate(event, context);
-            Telemetry.endInvocation(span, response.getStatusCode());
-            return response;
-        }
-        catch (RuntimeException | Error failure) {
-            Telemetry.failInvocation(span, failure);
-            throw failure;
-        }
-    }
-
-    private APIGatewayV2HTTPResponse authenticate(APIGatewayV2HTTPEvent event, Context context) {
         String correlationId = correlation(event);
         Telemetry.log("request", correlationId, Map.of("operation", "authenticate_cpf"));
         Telemetry.cpfAttempt("received");
