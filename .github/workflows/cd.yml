@@ -18,12 +18,6 @@ on:
         required: true
         type: environment
         default: prod
-  # TEMPORARIO — REMOVER ANTES DO MERGE
-  # Um workflow_dispatch so aparece na UI depois que o arquivo existe na branch
-  # default, entao o CD nao teria como ser exercitado antes do merge. Este push
-  # roda apenas o job de plan, que e read-only.
-  push:
-    branches: [chore/padroniza-esteira]
 
 permissions:
   contents: read
@@ -50,8 +44,7 @@ jobs:
 
   plan:
     name: Terraform plan
-    # O 'push' e TEMPORARIO e sai junto com o gatilho la em cima.
-    if: github.event_name == 'push' || inputs.action == 'plan'
+    if: inputs.action == 'plan'
     runs-on: ubuntu-latest
     needs: build
     environment: ${{ inputs.environment || 'prod' }}
