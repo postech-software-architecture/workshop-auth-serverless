@@ -77,46 +77,15 @@ runs:
         aws-session-token: ${{ inputs.aws-session-token }}
         aws-region: ${{ inputs.aws-region }}
 
-    # O terraform init falha com um 403 cru do S3 quando a sessao do AWS Academy
-    # expira, o que e indistinguivel de um bucket errado. Este pre-voo separa os
-    # tres casos e diz o que fazer em cada um.
-    - name: Pre-voo da credencial e do state
+    # O script e identico ao de workshop-infra-database e
+    # workshop-infra-kubernetes. Ao alterar um, alterar os outros dois.
+    - name: Pre-voo da credencial e do backend
       shell: bash
       env:
         TFSTATE_BUCKET: ${{ inputs.tfstate-bucket }}
+        TFSTATE_LOCK_TABLE: ${{ inputs.tfstate-lock-table }}
         TFSTATE_KEY: ${{ inputs.tfstate-key }}
-      run: |
-        set -euo pipefail
-
-        if ! account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"; then
-          echo '::error::Credencial AWS invalida ou expirada. A sessao do AWS Academy dura cerca de quatro horas: abra o lab, copie o bloco AWS CLI e atualize os secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY e AWS_SESSION_TOKEN no environment usado por este job.' >&2
-          exit 1
-        fi
-        echo "Conta AWS autenticada: ${account}"
-
-        set +e
-        head_error="$(aws s3api head-object --bucket "$TFSTATE_BUCKET" --key "$TFSTATE_KEY" 2>&1 >/dev/null)"
-        head_status=$?
-        set -e
-
-        if [ "$head_status" -eq 0 ]; then
-          echo "State encontrado em s3://${TFSTATE_BUCKET}/${TFSTATE_KEY}"
-          exit 0
-        fi
-
-        case "$head_error" in
-          *404*|*'Not Found'*)
-            echo "::notice::State ${TFSTATE_KEY} ainda nao existe em ${TFSTATE_BUCKET}; o primeiro apply cria o objeto."
-            ;;
-          *403*|*Forbidden*|*AccessDenied*)
-            echo "::error::Sem acesso a s3://${TFSTATE_BUCKET}/${TFSTATE_KEY} (403). A conta autenticada e ${account}. As duas causas comuns sao a sessao do AWS Academy expirada e um TFSTATE_BUCKET que pertence a outra conta do lab. Atualize os secrets AWS_* e confira a variavel TFSTATE_BUCKET do environment." >&2
-            exit 1
-            ;;
-          *)
-            echo "::error::Falha ao consultar s3://${TFSTATE_BUCKET}/${TFSTATE_KEY}: ${head_error}" >&2
-            exit 1
-            ;;
-        esac
+      run: bash .github/scripts/preflight-backend.sh
 
     - name: Validar pre-requisitos ADOT e New Relic
       if: inputs.validate-observability == 'true'
