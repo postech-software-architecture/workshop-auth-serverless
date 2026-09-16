@@ -18,6 +18,12 @@ on:
         required: true
         type: environment
         default: prod
+  # TEMPORARIO — REMOVER ANTES DO MERGE
+  # Um workflow_dispatch so aparece na UI depois que o arquivo existe na branch
+  # default, entao o CD nao teria como ser exercitado antes do merge. Este push
+  # roda apenas o job de plan, que e read-only.
+  push:
+    branches: [chore/padroniza-esteira]
 
 permissions:
   contents: read
@@ -26,8 +32,11 @@ concurrency:
   group: cd-serverless-${{ github.ref }}
   cancel-in-progress: false
 
+# AWS_REGION nao entra aqui de proposito. O contexto vars no nivel do workflow
+# so enxerga variaveis do repositorio, nunca as do Environment, entao
+# vars.AWS_REGION seria sempre vazio e cairia no default sem aviso. A regiao e
+# resolvida dentro de cada job, que ja declara environment.
 env:
-  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   TF_IN_AUTOMATION: 'true'
   TF_INPUT: 'false'
 
@@ -41,10 +50,11 @@ jobs:
 
   plan:
     name: Terraform plan
-    if: inputs.action == 'plan'
+    # O 'push' e TEMPORARIO e sai junto com o gatilho la em cima.
+    if: github.event_name == 'push' || inputs.action == 'plan'
     runs-on: ubuntu-latest
     needs: build
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment || 'prod' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -60,7 +70,7 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
           tfstate-bucket: ${{ vars.TFSTATE_BUCKET }}
           tfstate-lock-table: ${{ vars.TFSTATE_LOCK_TABLE }}
           adot-layer-arn: ${{ vars.ADOT_LAYER_ARN }}
@@ -97,7 +107,7 @@ jobs:
     if: inputs.action == 'apply'
     runs-on: ubuntu-latest
     needs: build
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment || 'prod' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -118,7 +128,7 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
           tfstate-bucket: ${{ vars.TFSTATE_BUCKET }}
           tfstate-lock-table: ${{ vars.TFSTATE_LOCK_TABLE }}
           adot-layer-arn: ${{ vars.ADOT_LAYER_ARN }}
@@ -177,7 +187,7 @@ jobs:
     if: inputs.action == 'destroy'
     runs-on: ubuntu-latest
     needs: build
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment || 'prod' }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -200,7 +210,7 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
           tfstate-bucket: ${{ vars.TFSTATE_BUCKET }}
           tfstate-lock-table: ${{ vars.TFSTATE_LOCK_TABLE }}
           validate-observability: 'false'
