@@ -1,0 +1,60 @@
+name: _build
+
+# Workflow reutilizavel chamado por ci.yml e cd.yml. Manter o build num unico
+# lugar garante que o function.zip validado na CI e exatamente o mesmo formato
+# que o CD empacota antes de aplicar o Terraform.
+on:
+  workflow_call:
+    outputs:
+      artifact:
+        description: Nome do artefato que contem o target/function.zip.
+        value: ${{ jobs.build.outputs.artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, testes e pacote Lambda
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact: ${{ steps.artifact.outputs.name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Definir nome do artefato
+        id: artifact
+        run: echo "name=lambda-package-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Configurar JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Validar scripts Bash
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do bash -n "$script"; done \
+            < <(find scripts -type f -name '*.sh' -print0)
+
+      - name: Testar e empacotar function.zip
+        run: mvn -B verify
+
+      - name: Conferir pacote Lambda
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s target/function.zip
+          unzip -l target/function.zip | head -20
+
+      - name: Publicar artefato Lambda
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: target/function.zip
+          if-no-files-found: error
+          retention-days: 7

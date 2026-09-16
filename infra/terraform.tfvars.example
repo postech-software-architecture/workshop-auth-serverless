@@ -1,0 +1,28 @@
+# Copie para terraform.tfvars e preencha com valores do seu ambiente.
+# terraform.tfvars e ignorado pelo Git: NUNCA commite valores reais.
+# Na pipeline estes valores chegam como TF_VAR_* vindos do GitHub Environment.
+
+# Bucket S3 com os states do cluster e do banco. Na pipeline vem de TFSTATE_BUCKET.
+cluster_state_bucket  = "soat-tc3-tfstate-000000000000"
+database_state_bucket = "soat-tc3-tfstate-000000000000"
+
+# Senha do usuario da aplicacao no RDS. Secret DB_PASSWORD.
+db_password = "troque-me"
+
+# Chave HMAC do JWT, minimo 32 caracteres. Secret JWT_SECRET.
+jwt_secret = "0000000000000000000000000000000000000000000000000000000000000000"
+
+# ARN regional da camada ADOT Java compativel com Java 21. Variavel ADOT_LAYER_ARN.
+adot_layer_arn = "arn:aws:lambda:us-east-1:615299751070:layer:AWSOpenTelemetryDistroJava:16"
+
+# Chave de ingestao do New Relic. Secret NEW_RELIC_LICENSE_KEY.
+new_relic_api_key = "troque-me"
+
+# SHA hexadecimal do commit implantado. Na pipeline vem de github.sha.
+service_version = "0000000"
+
+# Opcionais, ja possuem default em variables.tf:
+# region                  = "us-east-1"
+# project                 = "workshop"
+# deployment_environment  = "prod"
+# new_relic_otlp_endpoint = "https://otlp.nr-data.net"
