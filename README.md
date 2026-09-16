@@ -184,13 +184,9 @@ Os preflights executaveis dos riscos da W0 estao em
 
 ## Diagrama da arquitetura
 
-<!-- TODO: inserir o diagrama da arquitetura serverless deste repositorio
-     (Cliente → API Gateway → {Lambda auth | VPC Link → NLB → EKS} → RDS, com
-     export OTLP para o New Relic). Sugestao: versionar em docs/diagrams/. -->
+![Diagrama de componentes da arquitetura serverless](docs/diagrama/diagrama_componentes_auth_serverless.png)
 
-```text
-[ reservado para o diagrama da arquitetura serverless de autenticacao ]
-```
+> Fonte editavel: [`docs/diagrama/diagrama_componentes_auth_serverless.drawio`](docs/diagrama/diagrama_componentes_auth_serverless.drawio)
 
 ---
 
