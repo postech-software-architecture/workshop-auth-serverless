@@ -7,14 +7,6 @@ data "terraform_remote_state" "cluster" {
   }
 }
 
-data "terraform_remote_state" "database" {
-  backend = "s3"
-  config = {
-    bucket = var.database_state_bucket
-    key    = var.database_state_key
-    region = var.region
-  }
-}
 
 data "aws_iam_role" "lab" {
   name = "LabRole"
@@ -32,13 +24,7 @@ data "aws_lb_listener" "internal_api" {
 locals {
   vpc_id             = data.terraform_remote_state.cluster.outputs.vpc_id
   private_subnet_ids = data.terraform_remote_state.cluster.outputs.private_subnet_ids
-  db_client_sg_id    = data.terraform_remote_state.cluster.outputs.db_client_sg_id
-  # During teardown the RDS state can already be empty. These fallbacks keep the
-  # serverless destroy plan evaluable; no placeholder is applied to state resources.
-  db_host     = try(data.terraform_remote_state.database.outputs.db_host, "destroy.invalid")
-  db_port     = try(data.terraform_remote_state.database.outputs.db_port, 5432)
-  db_name     = try(data.terraform_remote_state.database.outputs.db_name, "workshop")
-  db_username = coalesce(try(data.terraform_remote_state.database.outputs.db_username, null), var.db_username)
+
 }
 
 resource "aws_security_group" "vpc_link" {
@@ -56,12 +42,7 @@ resource "aws_security_group" "vpc_link" {
   }
 }
 
-# A Lambda anexa este grupo junto com o db_client_sg do cluster. Aquele grupo
-# existe para autorizar a origem no RDS e so libera saida na 5432, entao sozinho
-# ele impede o agente ADOT de alcancar o endpoint OTLP da New Relic: o export
-# falha por timeout, sem erro de credencial, e a telemetria se perde em silencio.
-# Criar o grupo aqui mantem a fronteira entre os repositorios e nao altera a
-# saida dos nodes do EKS, que compartilham o db_client_sg.
+# Lambda uses its existing SG for private HTTP identity and telemetry; no database access is attached.
 resource "aws_security_group" "lambda" {
   name                   = "${var.project}-auth-lambda-sg"
   description            = "Egress security group for the CPF authentication Lambda"
@@ -77,9 +58,9 @@ resource "aws_security_group" "lambda" {
   }
 
   egress {
-    description = "Reach the RDS instance inside the VPC"
-    from_port   = local.db_port
-    to_port     = local.db_port
+    description = "Reach private identity HTTP listener inside the VPC"
+    from_port   = 8081
+    to_port     = 8081
     protocol    = "tcp"
     cidr_blocks = [data.terraform_remote_state.cluster.outputs.vpc_cidr]
   }
@@ -116,18 +97,14 @@ resource "aws_lambda_function" "auth" {
 
   vpc_config {
     subnet_ids         = local.private_subnet_ids
-    security_group_ids = [local.db_client_sg_id, aws_security_group.lambda.id]
+    security_group_ids = [aws_security_group.lambda.id]
   }
 
   environment {
     variables = {
-      DB_HOST     = local.db_host
-      DB_PORT     = tostring(local.db_port)
-      DB_NAME     = local.db_name
-      DB_URL      = "jdbc:postgresql://${local.db_host}:${local.db_port}/${local.db_name}"
-      DB_USER     = local.db_username
-      DB_PASSWORD = var.db_password
-      JWT_SECRET  = var.jwt_secret
+      IDENTITY_URL       = var.identity_url
+      AUTH_SERVICE_TOKEN = var.auth_service_token
+      JWT_SECRET         = var.jwt_secret
 
       # ADOT Java agent configuration. The AWSOpenTelemetryDistroJava layer ships
       # only the Java agent and the otel-instrument wrapper: it has no embedded
@@ -187,7 +164,7 @@ resource "aws_lambda_alias" "prod" {
   name             = "prod"
   description      = "Production alias for the published CPF authentication Lambda version"
   function_name    = aws_lambda_function.auth.function_name
-  function_version = aws_lambda_function.auth.version
+  function_version = var.auth_version_override != "" ? var.auth_version_override : data.aws_lambda_alias.current.function_version
 }
 
 resource "aws_apigatewayv2_api" "this" {
@@ -257,4 +234,55 @@ resource "aws_lambda_permission" "gateway" {
   qualifier     = aws_lambda_alias.prod.name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
+}
+
+
+# Opt-in: legacy $default and its integration remain unchanged until explicit cutover.
+data "aws_lb" "fase4" {
+  count = var.fase4_routes_enabled ? 1 : 0
+  name  = var.fase4_nlb_name
+}
+data "aws_lb_listener" "fase4" {
+  count             = var.fase4_routes_enabled ? 1 : 0
+  load_balancer_arn = data.aws_lb.fase4[0].arn
+  port              = 80
+}
+resource "aws_apigatewayv2_integration" "fase4" {
+  lifecycle {
+    precondition {
+      condition     = !var.fase4_routes_enabled || (var.auth_version_override != "" && try(data.aws_lambda_function.candidate[0].environment[0].variables["IDENTITY_URL"], "") == var.identity_url)
+      error_message = "Test and select a published HTTP-identity candidate version before cutting over Phase4 routes."
+    }
+  }
+
+  count                  = var.fase4_routes_enabled ? 1 : 0
+  api_id                 = aws_apigatewayv2_api.this.id
+  integration_type       = "HTTP_PROXY"
+  integration_uri        = data.aws_lb_listener.fase4[0].arn
+  integration_method     = "ANY"
+  connection_type        = "VPC_LINK"
+  connection_id          = aws_apigatewayv2_vpc_link.this.id
+  payload_format_version = "1.0"
+  request_parameters     = { "overwrite:path" = "$request.path" }
+}
+locals {
+  fase4_prefixes = ["/api/auth/login", "/api/auth/refresh", "/api/auth/logout", "/api/public", "/api/v1/ordens-servico", "/api/v1/clientes", "/api/v1/veiculos", "/api/v1/servicos", "/api/v1/pecas", "/api/v1/estoques", "/api/v1/usuarios", "/api/v1/orcamentos", "/api/v1/pagamentos", "/api/v1/operacoes-financeiras", "/api/v1/webhooks/mercado-pago", "/api/v1/trabalhos"]
+  fase4_routes   = toset(flatten([for p in local.fase4_prefixes : ["ANY ${p}", "ANY ${p}/{proxy+}"]]))
+}
+resource "aws_apigatewayv2_route" "fase4" {
+  for_each  = var.fase4_routes_enabled ? local.fase4_routes : toset([])
+  api_id    = aws_apigatewayv2_api.this.id
+  route_key = each.value
+  target    = "integrations/${aws_apigatewayv2_integration.fase4[0].id}"
+}
+
+# Publish a candidate without moving the existing production alias implicitly.
+data "aws_lambda_alias" "current" {
+  function_name = "${var.project}-auth-cpf"
+  name          = "prod"
+}
+data "aws_lambda_function" "candidate" {
+  count         = var.fase4_routes_enabled && var.auth_version_override != "" ? 1 : 0
+  function_name = "${var.project}-auth-cpf"
+  qualifier     = var.auth_version_override
 }
