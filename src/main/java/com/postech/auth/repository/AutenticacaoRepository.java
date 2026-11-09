@@ -1,11 +1,30 @@
 package com.postech.auth.repository;
-import java.sql.*; import java.util.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.URI;
+import java.net.http.*;
+import java.time.Duration;
+import java.sql.SQLException;
+import java.util.*;
+/** Compatibility port for the existing Lambda. No JDBC connection or database credentials. */
 public final class AutenticacaoRepository {
- private static final String SQL="SELECT u.id,u.username,u.ativo usuario_ativo,u.bloqueado,u.data_remocao usuario_removido,c.ativo cliente_ativo,c.data_remocao cliente_removido,array_agg(ur.role) roles FROM clientes c JOIN usuarios u ON u.cliente_id=c.id JOIN usuarios_roles ur ON ur.usuario_id=u.id WHERE c.documento=? GROUP BY u.id,c.id";
- private final String url,user,password; private Connection connection;
- public AutenticacaoRepository(){this(System.getenv("DB_URL"),System.getenv("DB_USER"),System.getenv("DB_PASSWORD"));}
- public AutenticacaoRepository(String url,String user,String password){this.url=url;this.user=user;this.password=password;}
- public Optional<Identidade> buscarPorCpf(String cpf)throws SQLException{try(PreparedStatement p=conexao().prepareStatement(SQL)){p.setString(1,cpf);try(ResultSet r=p.executeQuery()){if(!r.next())return Optional.empty();Set<String> roles=new LinkedHashSet<>();Array a=r.getArray("roles");if(a!=null)for(Object x:(Object[])a.getArray())roles.add(String.valueOf(x));return Optional.of(new Identidade(UUID.fromString(r.getString("id")),r.getString("username"),r.getBoolean("usuario_ativo"),r.getBoolean("bloqueado"),r.getTimestamp("usuario_removido")!=null,r.getBoolean("cliente_ativo"),r.getTimestamp("cliente_removido")!=null,roles));}}}
- private Connection conexao()throws SQLException{if(connection==null||connection.isClosed()){if(url==null||user==null||password==null)throw new SQLException("Banco nao configurado");connection=DriverManager.getConnection(url,user,password);}return connection;}
- public record Identidade(UUID id,String username,boolean usuarioAtivo,boolean bloqueado,boolean usuarioRemovido,boolean clienteAtivo,boolean clienteRemovido,Set<String> roles){public boolean elegivel(){return usuarioAtivo&&!bloqueado&&!usuarioRemovido&&clienteAtivo&&!clienteRemovido&&roles.contains("CLIENTE");}}
+    private final String url,token;private final HttpClient http;private final ObjectMapper json=new ObjectMapper();
+    public AutenticacaoRepository(){this(System.getenv("IDENTITY_URL"),System.getenv("AUTH_SERVICE_TOKEN"));}
+    public AutenticacaoRepository(String url,String token){this.url=url;this.token=token;this.http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).followRedirects(HttpClient.Redirect.NEVER).build();}
+    public Optional<Identidade> buscarPorCpf(String cpf)throws SQLException{
+        if(url==null || token==null || token.isBlank())throw new SQLException("Identidade nao configurada");
+        try{
+            var request=HttpRequest.newBuilder(URI.create(url+"/internal/v1/identidade/por-cpf")).timeout(Duration.ofSeconds(5)).header("Content-Type","application/json").header("X-Service-Token",token).POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(Map.of("cpf",cpf)))).build();
+            var response=http.send(request,HttpResponse.BodyHandlers.ofString());
+            if(response.statusCode()==404)return Optional.empty();
+            if(response.statusCode()!=200)throw new SQLException("Servico de identidade indisponivel");
+            Identidade identity=json.readValue(response.body(),Identidade.class);
+            if(identity.id()==null || identity.username()==null || identity.roles()==null)throw new SQLException("Resposta de identidade invalida");
+            return Optional.of(identity);
+        }catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new SQLException("Identidade interrompida",interrupted);}
+        catch(java.io.IOException | IllegalArgumentException invalid){throw new SQLException("Falha no servico de identidade",invalid);}
+    }
+    public record Identidade(UUID id,String username,boolean usuarioAtivo,boolean bloqueado,boolean usuarioRemovido,boolean clienteAtivo,boolean clienteRemovido,Set<String> roles){
+        public Identidade{if(roles!=null)roles=Set.copyOf(roles);}
+        public boolean elegivel(){return id!=null && usuarioAtivo && !bloqueado && !usuarioRemovido && clienteAtivo && !clienteRemovido && roles!=null && roles.contains("CLIENTE");}
+    }
 }

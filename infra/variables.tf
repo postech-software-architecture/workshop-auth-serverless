@@ -14,10 +14,6 @@ variable "cluster_state_bucket" {
   description = "S3 bucket containing the cluster Terraform state. In GitHub Actions this is supplied from TFSTATE_BUCKET."
 }
 
-variable "database_state_bucket" {
-  type        = string
-  description = "S3 bucket containing the database Terraform state. In GitHub Actions this is supplied from TFSTATE_BUCKET."
-}
 
 variable "terraform_state_key" {
   type        = string
@@ -25,15 +21,7 @@ variable "terraform_state_key" {
   default     = "cluster/terraform.tfstate"
 }
 
-variable "database_state_key" {
-  type    = string
-  default = "database/terraform.tfstate"
-}
 
-variable "db_password" {
-  type      = string
-  sensitive = true
-}
 
 variable "jwt_secret" {
   type      = string
@@ -44,15 +32,7 @@ variable "jwt_secret" {
   }
 }
 
-variable "db_username" {
-  type    = string
-  default = "workshop"
-}
 
-variable "db_name" {
-  type    = string
-  default = "workshop"
-}
 
 variable "lambda_handler" {
   type        = string
@@ -128,4 +108,40 @@ variable "api_throttling_burst_limit" {
 variable "api_throttling_rate_limit" {
   type    = number
   default = 25
+}
+
+
+variable "identity_url" {
+  type = string
+  validation {
+    condition     = can(regex("^http://[A-Za-z0-9.-]+:8081$", var.identity_url))
+    error_message = "Use the private Phase4 NLB identity listener URL, http://host:8081, without path or credentials."
+  }
+}
+variable "auth_service_token" {
+  type      = string
+  sensitive = true
+  validation {
+    condition     = length(var.auth_service_token) >= 32
+    error_message = "Provide the same private AUTH_SERVICE_TOKEN to OS and Lambda."
+  }
+}
+variable "fase4_routes_enabled" {
+  type    = bool
+  default = false
+}
+variable "fase4_nlb_name" {
+  type    = string
+  default = "workshop-fase4-internal"
+}
+
+
+variable "auth_version_override" {
+  type        = string
+  default     = ""
+  description = "Published immutable Lambda version for deliberate alias rollback; empty preserves the currently published prod alias."
+  validation {
+    condition     = var.auth_version_override == "" || can(regex("^[1-9][0-9]*$", var.auth_version_override))
+    error_message = "Provide an immutable published version number or leave empty."
+  }
 }

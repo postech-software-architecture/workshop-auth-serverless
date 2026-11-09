@@ -10,3 +10,9 @@ output "lambda_function_name" {
 output "vpc_link_id" {
   value = aws_apigatewayv2_vpc_link.this.id
 }
+
+
+output "auth_candidate_version" {
+  description = "New immutable version to test before selecting it in AUTH_VERSION_OVERRIDE; prod is preserved by default."
+  value       = aws_lambda_function.auth.version
+}

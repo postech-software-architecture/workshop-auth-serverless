@@ -44,3 +44,4 @@ jobs:
             echo '::error::Segredo ou credencial literal encontrado em arquivo Terraform.' >&2
             exit 1
           fi
+
