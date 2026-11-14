@@ -1,0 +1,1 @@
+Terraform mock fixture only. Not a deployable Lambda artifact.

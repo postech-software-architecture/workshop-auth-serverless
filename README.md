@@ -2,8 +2,8 @@
 
 O runtime resolve identidade por HTTP em OS, sem JDBC. CPF, handler e JWT foram preservados. IDENTITY_URL aponta para o listener privado 8081 do NLB novo; AUTH_SERVICE_TOKEN deve coincidir com OS; JWT_SECRET é compartilhado.
 
-A pasta infra foi adaptada da infraestrutura existente: mesmos endereços Terraform, função auth-cpf, alias prod, LabRole, backend serverless/terraform.tfstate, ADOT/New Relic e API Gateway/VPC Link. Não há criação de role IAM ou state paralelo. As rotas adicionais ficam desligadas por padrão e não alteram o fallback antigo sem corte explícito.
+A pasta infra suporta dois modos: `fresh` cria a primeira candidata sem depender de Lambda, alias ou NLB antigos; `legacy` preserva o alias e fallback existentes. Mantém função auth-cpf, LabRole, backend serverless/terraform.tfstate e ADOT/New Relic. Os blocos moved preservam seis objetos existentes ao condicionar sua criação. Não cria IAM role/policy nem state paralelo.
 
-Os workflows preservam as credenciais temporárias Academy e o Environment prod. O CD adaptado fornece as variáveis HTTP, exige plano não destrutivo e permite rollback restrito das rotas adicionais e seleção de versão publicada anterior no alias. Não usar o CD anterior com o runtime HTTP.
+Os workflows usam credenciais temporárias Academy centralizadas e Environment prod. O bootstrap fresh não ativa acesso público: a candidata numerada é testada contra a OS, suas credenciais e JWT antes de criar alias/rotas. O apply repete esse teste antes da promoção. O endereço privado é descoberto pelo NLB; o smoke usa a URL da API produzida pelo Terraform.
 
-[Configuração, ordem de execução e limites](docs/ACADEMY.md). Executar `mvn -B clean verify` para verificar o runtime; 15 testes anteriores foram aprovados na cópia local. Terraform foi validado localmente em 09/11/2026; não houve plan/apply remoto, corte de tráfego ou prova integrada da Lambda.
+[Bootstrap, ativação e rollback](docs/AUTH-BOOTSTRAP.md). [Contexto Academy](docs/ACADEMY.md). Executar `mvn -B clean verify`, `python -m unittest discover -s scripts/tests -v` e `terraform -chdir=infra test` após init com backend desabilitado para os testes mockados. Plan/apply e teste real da candidata são verificações distintas do CI.

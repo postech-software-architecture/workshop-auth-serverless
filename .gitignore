@@ -5,3 +5,7 @@ target/
 
 **/.terraform/
 *.tfplan*
+__pycache__/
+private/
+*.env
+infra/tfplan

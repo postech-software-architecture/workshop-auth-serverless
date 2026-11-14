@@ -22,3 +22,6 @@ e valida o ARN e o endpoint antes de executar `plan` ou `apply`.
 
 O workflow continua sem deploy em pull requests. O deploy exige execução manual,
 Environment `prod` e a confirmação literal `APLICAR SERVERLESS PROD`.
+# Novo laboratório / infraestrutura legada
+
+O roteiro vigente para bootstrap sem legado, ativação de candidata, configuração e rollback está em [AUTH-BOOTSTRAP.md](../docs/AUTH-BOOTSTRAP.md). AUTH_DEPLOYMENT_MODE=fresh não consulta alias/NLB antigos; o modo legacy preserva esses contratos. Os testes Terraform usam mocks e não acessam AWS.

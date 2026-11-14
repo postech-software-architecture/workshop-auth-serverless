@@ -3,11 +3,19 @@
 # Na pipeline estes valores chegam como TF_VAR_* vindos do GitHub Environment.
 
 # Bucket S3 com os states do cluster e do banco. Na pipeline vem de TFSTATE_BUCKET.
-cluster_state_bucket  = "soat-tc3-tfstate-000000000000"
-database_state_bucket = "soat-tc3-tfstate-000000000000"
+cluster_state_bucket = "soat-tc4-tfstate"
 
-# Senha do usuario da aplicacao no RDS. Secret DB_PASSWORD.
-db_password = "troque-me"
+# Novo lab: nao depende de Lambda, alias ou NLB antigos.
+# Nao trocar um state legado existente para fresh para contornar migracao.
+deployment_mode       = "fresh"
+fase4_routes_enabled = false
+auth_version_override = ""
+
+# Vazio descobre o DNS do NLB workshop-fase4-internal na VPC do cluster.
+identity_url = ""
+auth_service_token = "mock-replace-locally-at-least-32-characters"
+
+# A Lambda nao recebe senha ou conexao do banco; resolve identidade por HTTP.
 
 # Chave HMAC do JWT, minimo 32 caracteres. Secret JWT_SECRET.
 jwt_secret = "0000000000000000000000000000000000000000000000000000000000000000"

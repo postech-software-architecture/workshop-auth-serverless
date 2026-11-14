@@ -112,9 +112,11 @@ variable "api_throttling_rate_limit" {
 
 
 variable "identity_url" {
-  type = string
+  type        = string
+  default     = ""
+  description = "Optional private identity URL; empty discovers the Phase4 NLB. An override must match its private DNS/listener."
   validation {
-    condition     = can(regex("^http://[A-Za-z0-9.-]+:8081$", var.identity_url))
+    condition     = var.identity_url == "" || can(regex("^http://[A-Za-z0-9.-]+:8081$", var.identity_url))
     error_message = "Use the private Phase4 NLB identity listener URL, http://host:8081, without path or credentials."
   }
 }
@@ -139,9 +141,19 @@ variable "fase4_nlb_name" {
 variable "auth_version_override" {
   type        = string
   default     = ""
-  description = "Published immutable Lambda version for deliberate alias rollback; empty preserves the currently published prod alias."
+  description = "Tested immutable Lambda version to activate. Empty preserves the legacy alias, or leaves a fresh installation unpublished."
   validation {
     condition     = var.auth_version_override == "" || can(regex("^[1-9][0-9]*$", var.auth_version_override))
     error_message = "Provide an immutable published version number or leave empty."
+  }
+}
+
+variable "deployment_mode" {
+  type        = string
+  default     = "legacy"
+  description = "legacy preserves existing aliases/fallback; fresh bootstraps without any previous Lambda, alias or legacy NLB."
+  validation {
+    condition     = contains(["legacy", "fresh"], var.deployment_mode)
+    error_message = "deployment_mode must be legacy or fresh. Never change an existing legacy state to fresh to bypass migration checks."
   }
 }

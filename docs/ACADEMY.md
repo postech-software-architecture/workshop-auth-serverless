@@ -1,5 +1,7 @@
 # Execução compatível com AWS Academy
 
+Para o laboratório criado do zero, seguir primeiro [Auth: bootstrap fresh e ativação](AUTH-BOOTSTRAP.md). O histórico abaixo descreve também o caminho legado; referências à preservação de alias/fallback antigos aplicam-se somente a AUTH_DEPLOYMENT_MODE=legacy. Em fresh, nenhum alias, rota pública ou fallback antigo é usado antes da validação da candidata.
+
 Atualizado em 09/11/2026. Os arquivos abaixo foram preparados e verificados localmente; não houve apply, corte de tráfego, pagamento ou acesso ao state remoto.
 
 ## Contratos preservados

@@ -13,18 +13,29 @@ data "aws_iam_role" "lab" {
 }
 
 data "aws_lb" "internal_api" {
-  name = "workshop-api-internal"
+  count = local.fresh_install ? 0 : 1
+  name  = "workshop-api-internal"
 }
 
 data "aws_lb_listener" "internal_api" {
-  load_balancer_arn = data.aws_lb.internal_api.arn
+  count             = local.fresh_install ? 0 : 1
+  load_balancer_arn = data.aws_lb.internal_api[0].arn
   port              = 80
 }
 
 locals {
-  vpc_id             = data.terraform_remote_state.cluster.outputs.vpc_id
-  private_subnet_ids = data.terraform_remote_state.cluster.outputs.private_subnet_ids
-
+  vpc_id                  = data.terraform_remote_state.cluster.outputs.vpc_id
+  private_subnet_ids      = data.terraform_remote_state.cluster.outputs.private_subnet_ids
+  fresh_install           = var.deployment_mode == "fresh"
+  auth_active             = !local.fresh_install || var.auth_version_override != ""
+  routes_active           = var.fase4_routes_enabled && local.auth_active
+  discovered_identity_url = "http://${data.aws_lb.fase4[0].dns_name}:8081"
+  identity_url            = var.identity_url == "" ? local.discovered_identity_url : var.identity_url
+  candidate_contract_valid = var.auth_version_override == "" ? false : (
+    try(data.aws_lambda_function.candidate[0].environment[0].variables["IDENTITY_URL"], "") == local.identity_url &&
+    try(data.aws_lambda_function.candidate[0].environment[0].variables["AUTH_SERVICE_TOKEN"], "") == var.auth_service_token &&
+    try(data.aws_lambda_function.candidate[0].environment[0].variables["JWT_SECRET"], "") == var.jwt_secret
+  )
 }
 
 resource "aws_security_group" "vpc_link" {
@@ -77,6 +88,15 @@ resource "aws_cloudwatch_log_group" "api" {
 }
 
 resource "aws_lambda_function" "auth" {
+  lifecycle {
+    precondition {
+      condition = (
+        data.aws_lb.fase4[0].internal && data.aws_lb.fase4[0].vpc_id == local.vpc_id &&
+        local.identity_url == local.discovered_identity_url && data.aws_lb_listener.identity.port == 8081
+      )
+      error_message = "Identity must use the Phase4 internal NLB in the cluster VPC on its private 8081 listener."
+    }
+  }
   function_name    = "${var.project}-auth-cpf"
   role             = data.aws_iam_role.lab.arn
   runtime          = "java21"
@@ -102,7 +122,7 @@ resource "aws_lambda_function" "auth" {
 
   environment {
     variables = {
-      IDENTITY_URL       = var.identity_url
+      IDENTITY_URL       = local.identity_url
       AUTH_SERVICE_TOKEN = var.auth_service_token
       JWT_SECRET         = var.jwt_secret
 
@@ -161,10 +181,17 @@ resource "aws_lambda_function" "auth" {
 }
 
 resource "aws_lambda_alias" "prod" {
+  count = local.auth_active ? 1 : 0
+  lifecycle {
+    precondition {
+      condition     = var.auth_version_override == "" || local.candidate_contract_valid
+      error_message = "Selected version must use the current private identity URL, AUTH_SERVICE_TOKEN and JWT_SECRET. Test the numbered candidate before activation."
+    }
+  }
   name             = "prod"
   description      = "Production alias for the published CPF authentication Lambda version"
   function_name    = aws_lambda_function.auth.function_name
-  function_version = var.auth_version_override != "" ? var.auth_version_override : data.aws_lambda_alias.current.function_version
+  function_version = var.auth_version_override != "" ? var.auth_version_override : data.aws_lambda_alias.current[0].function_version
 }
 
 resource "aws_apigatewayv2_api" "this" {
@@ -179,17 +206,19 @@ resource "aws_apigatewayv2_vpc_link" "this" {
 }
 
 resource "aws_apigatewayv2_integration" "auth" {
+  count                  = local.auth_active ? 1 : 0
   api_id                 = aws_apigatewayv2_api.this.id
   integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_alias.prod.invoke_arn
+  integration_uri        = aws_lambda_alias.prod[0].invoke_arn
   integration_method     = "POST"
   payload_format_version = "2.0"
 }
 
 resource "aws_apigatewayv2_integration" "service" {
+  count                  = local.fresh_install ? 0 : 1
   api_id                 = aws_apigatewayv2_api.this.id
   integration_type       = "HTTP_PROXY"
-  integration_uri        = data.aws_lb_listener.internal_api.arn
+  integration_uri        = data.aws_lb_listener.internal_api[0].arn
   integration_method     = "ANY"
   connection_type        = "VPC_LINK"
   connection_id          = aws_apigatewayv2_vpc_link.this.id
@@ -200,15 +229,17 @@ resource "aws_apigatewayv2_integration" "service" {
 }
 
 resource "aws_apigatewayv2_route" "auth" {
+  count     = local.auth_active ? 1 : 0
   api_id    = aws_apigatewayv2_api.this.id
   route_key = "POST /api/auth/cpf"
-  target    = "integrations/${aws_apigatewayv2_integration.auth.id}"
+  target    = "integrations/${aws_apigatewayv2_integration.auth[0].id}"
 }
 
 resource "aws_apigatewayv2_route" "service" {
+  count     = local.fresh_install ? 0 : 1
   api_id    = aws_apigatewayv2_api.this.id
   route_key = "$default"
-  target    = "integrations/${aws_apigatewayv2_integration.service.id}"
+  target    = "integrations/${aws_apigatewayv2_integration.service[0].id}"
 }
 
 resource "aws_apigatewayv2_stage" "prod" {
@@ -228,34 +259,40 @@ resource "aws_apigatewayv2_stage" "prod" {
 }
 
 resource "aws_lambda_permission" "gateway" {
+  count         = local.auth_active ? 1 : 0
   statement_id  = "AllowApiGatewayInvoke"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.auth.function_name
-  qualifier     = aws_lambda_alias.prod.name
+  qualifier     = aws_lambda_alias.prod[0].name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
 }
 
 
-# Opt-in: legacy $default and its integration remain unchanged until explicit cutover.
+# Resolve the Phase4 edge for private identity even before public activation.
+# The legacy NLB is never read in fresh mode.
 data "aws_lb" "fase4" {
-  count = var.fase4_routes_enabled ? 1 : 0
+  count = 1
   name  = var.fase4_nlb_name
 }
 data "aws_lb_listener" "fase4" {
-  count             = var.fase4_routes_enabled ? 1 : 0
+  count             = 1
   load_balancer_arn = data.aws_lb.fase4[0].arn
   port              = 80
+}
+data "aws_lb_listener" "identity" {
+  load_balancer_arn = data.aws_lb.fase4[0].arn
+  port              = 8081
 }
 resource "aws_apigatewayv2_integration" "fase4" {
   lifecycle {
     precondition {
-      condition     = !var.fase4_routes_enabled || (var.auth_version_override != "" && try(data.aws_lambda_function.candidate[0].environment[0].variables["IDENTITY_URL"], "") == var.identity_url)
+      condition     = local.candidate_contract_valid
       error_message = "Test and select a published HTTP-identity candidate version before cutting over Phase4 routes."
     }
   }
 
-  count                  = var.fase4_routes_enabled ? 1 : 0
+  count                  = local.routes_active ? 1 : 0
   api_id                 = aws_apigatewayv2_api.this.id
   integration_type       = "HTTP_PROXY"
   integration_uri        = data.aws_lb_listener.fase4[0].arn
@@ -270,7 +307,7 @@ locals {
   fase4_routes   = toset(flatten([for p in local.fase4_prefixes : ["ANY ${p}", "ANY ${p}/{proxy+}"]]))
 }
 resource "aws_apigatewayv2_route" "fase4" {
-  for_each  = var.fase4_routes_enabled ? local.fase4_routes : toset([])
+  for_each  = local.routes_active ? local.fase4_routes : toset([])
   api_id    = aws_apigatewayv2_api.this.id
   route_key = each.value
   target    = "integrations/${aws_apigatewayv2_integration.fase4[0].id}"
@@ -278,11 +315,12 @@ resource "aws_apigatewayv2_route" "fase4" {
 
 # Publish a candidate without moving the existing production alias implicitly.
 data "aws_lambda_alias" "current" {
+  count         = local.fresh_install ? 0 : 1
   function_name = "${var.project}-auth-cpf"
   name          = "prod"
 }
 data "aws_lambda_function" "candidate" {
-  count         = var.fase4_routes_enabled && var.auth_version_override != "" ? 1 : 0
+  count         = var.auth_version_override != "" ? 1 : 0
   function_name = "${var.project}-auth-cpf"
   qualifier     = var.auth_version_override
 }
