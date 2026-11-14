@@ -37,6 +37,8 @@ jobs:
           terraform -chdir=infra fmt -check -recursive -diff
           terraform -chdir=infra init -backend=false -input=false
           terraform -chdir=infra validate -no-color
+          terraform -chdir=infra test -no-color
+          python3 -m unittest discover -s scripts/tests -v
           # Referencias a variaveis sensiveis (por exemplo, var.jwt_secret) sao
           # esperadas. O guard bloqueia somente valores literais.
           if find infra -type f \( -name '*.tf' -o -name '*.tfvars' \) -print0 \
@@ -44,3 +46,4 @@ jobs:
             echo '::error::Segredo ou credencial literal encontrado em arquivo Terraform.' >&2
             exit 1
           fi
+

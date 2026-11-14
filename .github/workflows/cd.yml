@@ -1,13 +1,215 @@
 name: CD — serverless prod
+permissions:
+  contents: read
+concurrency:
+  group: serverless-prod
+  cancel-in-progress: false
+env:
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+jobs:
+  build:
+    name: Lambda
+    uses: ./.github/workflows/_build.yml
+    if: inputs.action != 'validate'
+  plan:
+    name: Terraform plan
+    if: github.ref == 'refs/heads/main' && inputs.action == 'plan'
+    runs-on: ubuntu-latest
+    needs: build
+    environment: ${{ inputs.environment || 'prod' }}
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v7
+    - name: Baixar pacote da Lambda
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ needs.build.outputs.artifact }}
+        path: target
+    - uses: ./.github/actions/terraform-backend
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+        aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+        tfstate-bucket: ${{ vars.TFSTATE_BUCKET }}
+        tfstate-lock-table: ${{ vars.TFSTATE_LOCK_TABLE }}
+        adot-layer-arn: ${{ vars.ADOT_LAYER_ARN }}
+        new-relic-otlp-endpoint: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net' }}
+        new-relic-license-key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+    - name: Executar plan sem expor variaveis sensiveis
+      shell: bash
+      env:
+        TF_VAR_cluster_state_bucket: ${{ vars.TFSTATE_BUCKET }}
+        TF_VAR_identity_url: ${{ vars.IDENTITY_URL }}
+        TF_VAR_auth_service_token: ${{ secrets.AUTH_SERVICE_TOKEN }}
+        TF_VAR_fase4_routes_enabled: ${{ vars.FASE4_ROUTES_ENABLED || 'false' }}
+        TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+        TF_VAR_adot_layer_arn: ${{ vars.ADOT_LAYER_ARN }}
+        TF_VAR_new_relic_api_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+        TF_VAR_new_relic_otlp_endpoint: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net' }}
+        TF_VAR_service_version: ${{ github.sha }}
+        TF_VAR_auth_version_override: ${{ vars.AUTH_VERSION_OVERRIDE || '' }}
+        TF_VAR_deployment_mode: ${{ vars.AUTH_DEPLOYMENT_MODE || 'legacy' }}
+        TF_VAR_fase4_nlb_name: ${{ vars.FASE4_NLB_NAME || 'workshop-fase4-internal' }}
+        ALLOW_ROUTE_ROLLBACK: ${{ inputs.allow_phase4_route_rollback }}
+      run: bash scripts/plan-serverless.sh
+    - name: Publicar plan sanitizado
+      uses: actions/upload-artifact@v7
+      with:
+        name: terraform-plan-${{ github.sha }}
+        path: ${{ runner.temp }}/tfplan-sanitized.txt
+        retention-days: 7
+    - name: Remove private plan files
+      if: always()
+      shell: bash
+      run: rm -f infra/tfplan "$RUNNER_TEMP/serverless-plan.json" "$RUNNER_TEMP/tfplan.txt"
+  apply:
+    name: Terraform apply
+    if: github.ref == 'refs/heads/main' && inputs.action == 'apply'
+    runs-on: ubuntu-latest
+    needs: build
+    environment: ${{ inputs.environment || 'prod' }}
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v7
+    - name: Exigir confirmacao explicita
+      env:
+        CONFIRMATION: ${{ inputs.confirmation }}
+      run: test "$CONFIRMATION" = 'APLICAR SERVERLESS PROD'
+    - name: Baixar pacote da Lambda
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ needs.build.outputs.artifact }}
+        path: target
+    - uses: ./.github/actions/terraform-backend
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+        aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+        tfstate-bucket: ${{ vars.TFSTATE_BUCKET }}
+        tfstate-lock-table: ${{ vars.TFSTATE_LOCK_TABLE }}
+        adot-layer-arn: ${{ vars.ADOT_LAYER_ARN }}
+        new-relic-otlp-endpoint: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net' }}
+        new-relic-license-key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+    - name: Aplicar Terraform
+      shell: bash
+      env:
+        TF_VAR_cluster_state_bucket: ${{ vars.TFSTATE_BUCKET }}
+        TF_VAR_identity_url: ${{ vars.IDENTITY_URL }}
+        TF_VAR_auth_service_token: ${{ secrets.AUTH_SERVICE_TOKEN }}
+        TF_VAR_fase4_routes_enabled: ${{ vars.FASE4_ROUTES_ENABLED || 'false' }}
+        TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+        TF_VAR_adot_layer_arn: ${{ vars.ADOT_LAYER_ARN }}
+        TF_VAR_new_relic_api_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+        TF_VAR_new_relic_otlp_endpoint: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net' }}
+        TF_VAR_service_version: ${{ github.sha }}
+        TF_VAR_auth_version_override: ${{ vars.AUTH_VERSION_OVERRIDE || '' }}
+        ALLOW_ROUTE_ROLLBACK: ${{ inputs.allow_phase4_route_rollback }}
+        TF_VAR_deployment_mode: ${{ vars.AUTH_DEPLOYMENT_MODE || 'legacy' }}
+        TF_VAR_fase4_nlb_name: ${{ vars.FASE4_NLB_NAME || 'workshop-fase4-internal' }}
+        TEST_CPF: ${{ secrets.TEST_CPF }}
+      run: bash scripts/apply-serverless.sh
+    - name: Post-check do endpoint
+      shell: bash
+      run: python scripts/check-serverless-endpoint.py
+    - name: Remove private plan files
+      if: always()
+      shell: bash
+      run: rm -f infra/tfplan "$RUNNER_TEMP/serverless-plan.json" "$RUNNER_TEMP/tfplan.txt"
+  destroy:
+    name: Terraform destroy
+    if: github.ref == 'refs/heads/main' && inputs.action == 'destroy'
+    runs-on: ubuntu-latest
+    needs: build
+    environment: ${{ inputs.environment || 'prod' }}
+    timeout-minutes: 25
+    steps:
+    - uses: actions/checkout@v7
+    - name: Exigir confirmacao explicita
+      env:
+        CONFIRMATION: ${{ inputs.confirmation }}
+      run: test "$CONFIRMATION" = 'DESTRUIR SERVERLESS PROD'
+    - name: Baixar pacote da Lambda
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ needs.build.outputs.artifact }}
+        path: target
+    - uses: ./.github/actions/terraform-backend
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+        aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+        tfstate-bucket: ${{ vars.TFSTATE_BUCKET }}
+        tfstate-lock-table: ${{ vars.TFSTATE_LOCK_TABLE }}
+        validate-observability: 'false'
+    - name: Gerar plan de destroy isolado
+      shell: bash
+      env:
+        TF_VAR_cluster_state_bucket: ${{ vars.TFSTATE_BUCKET }}
+        TF_VAR_identity_url: ''
+        TF_VAR_auth_service_token: destroy-placeholder-token-at-least-32-characters
+        TF_VAR_jwt_secret: '0000000000000000000000000000000000000000000000000000000000000000'
+        TF_VAR_adot_layer_arn: arn:aws:lambda:us-east-1:901920570463:layer:placeholder:1
+        TF_VAR_new_relic_api_key: destroy-placeholder-new-relic-api-key
+        TF_VAR_service_version: '0000000'
+        TF_VAR_deployment_mode: ${{ vars.AUTH_DEPLOYMENT_MODE || 'legacy' }}
+        TF_VAR_fase4_nlb_name: ${{ vars.FASE4_NLB_NAME || 'workshop-fase4-internal' }}
+      run: "set -euo pipefail\nterraform -chdir=infra plan -destroy -refresh=false -input=false -no-color -out=destroy.tfplan\n\
+        terraform -chdir=infra show -no-color destroy.tfplan > \"$RUNNER_TEMP/destroy-plan.txt\"\nsed -E 's/(password|secret|token|authorization)[^=]*=.*/\\\
+        1 = (sensitive)/Ig' \\\n  \"$RUNNER_TEMP/destroy-plan.txt\" > \"$RUNNER_TEMP/destroy-plan-sanitized.txt\"\n"
+    - name: Verificar fronteira do destroy
+      shell: bash
+      run: "set -euo pipefail\nterraform -chdir=infra show -json destroy.tfplan > destroy.tfplan.json\nif jq -e '.resource_changes[]?\
+        \ | select(.type | startswith(\"aws_eks_\") or startswith(\"aws_db_\"))' \\\n  destroy.tfplan.json >/dev/null; then\n\
+        \  echo '::error::O destroy serverless nao pode remover EKS ou RDS.' >&2\n  exit 1\nfi\n"
+    - name: Publicar plan sanitizado
+      uses: actions/upload-artifact@v7
+      with:
+        name: terraform-destroy-plan-${{ github.sha }}
+        path: ${{ runner.temp }}/destroy-plan-sanitized.txt
+        retention-days: 7
+    - name: Aplicar destroy confirmado
+      run: 'terraform -chdir=infra apply -input=false -auto-approve destroy.tfplan
 
-on:
+        '
+  validate:
+    name: Validate immutable candidate
+    if: github.ref == 'refs/heads/main' && inputs.action == 'validate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment || 'prod' }}
+    steps:
+    - uses: actions/checkout@v7
+    - uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+        aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+    - name: Test candidate without changing aliases or routes
+      env:
+        TEST_CPF: ${{ secrets.TEST_CPF }}
+        JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        AUTH_SERVICE_TOKEN: ${{ secrets.AUTH_SERVICE_TOKEN }}
+        IDENTITY_URL: ${{ vars.IDENTITY_URL }}
+        FASE4_NLB_NAME: ${{ vars.FASE4_NLB_NAME || 'workshop-fase4-internal' }}
+        CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+      run: python scripts/test-candidate.py --function workshop-auth-cpf --version "$CANDIDATE_VERSION"
+'on':
   workflow_dispatch:
     inputs:
       action:
         description: Operacao a executar
         required: true
         type: choice
-        options: [plan, apply, destroy]
+        options:
+        - plan
+        - validate
+        - apply
+        - destroy
         default: plan
       confirmation:
         description: 'Para apply: APLICAR SERVERLESS PROD; para destroy: DESTRUIR SERVERLESS PROD'
@@ -18,232 +220,13 @@ on:
         required: true
         type: environment
         default: prod
-
-permissions:
-  contents: read
-
-concurrency:
-  group: cd-serverless-${{ github.ref }}
-  cancel-in-progress: false
-
-# AWS_REGION nao entra aqui de proposito. O contexto vars no nivel do workflow
-# so enxerga variaveis do repositorio, nunca as do Environment, entao
-# vars.AWS_REGION seria sempre vazio e cairia no default sem aviso. A regiao e
-# resolvida dentro de cada job, que ja declara environment.
-env:
-  TF_IN_AUTOMATION: 'true'
-  TF_INPUT: 'false'
-
-jobs:
-  # O CD reconstroi o pacote em vez de baixar o artefato da CI: um run de
-  # workflow_dispatch nao enxerga artefatos de outro run, e reconstruir garante
-  # que o function.zip aplicado corresponde ao commit alvo.
-  build:
-    name: Lambda
-    uses: ./.github/workflows/_build.yml
-
-  plan:
-    name: Terraform plan
-    if: inputs.action == 'plan'
-    runs-on: ubuntu-latest
-    needs: build
-    environment: ${{ inputs.environment || 'prod' }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Baixar pacote da Lambda
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ needs.build.outputs.artifact }}
-          path: target
-
-      - uses: ./.github/actions/terraform-backend
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-          tfstate-bucket: ${{ vars.TFSTATE_BUCKET }}
-          tfstate-lock-table: ${{ vars.TFSTATE_LOCK_TABLE }}
-          adot-layer-arn: ${{ vars.ADOT_LAYER_ARN }}
-          new-relic-otlp-endpoint: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net' }}
-          new-relic-license-key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
-
-      - name: Executar plan sem expor variaveis sensiveis
-        shell: bash
-        env:
-          TF_VAR_cluster_state_bucket: ${{ vars.TFSTATE_BUCKET }}
-          TF_VAR_database_state_bucket: ${{ vars.TFSTATE_BUCKET }}
-          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-          TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
-          TF_VAR_adot_layer_arn: ${{ vars.ADOT_LAYER_ARN }}
-          TF_VAR_new_relic_api_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
-          TF_VAR_new_relic_otlp_endpoint: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net' }}
-          TF_VAR_service_version: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          terraform -chdir=infra plan -input=false -no-color -out=tfplan
-          terraform -chdir=infra show -no-color tfplan > "$RUNNER_TEMP/tfplan.txt"
-          sed -E 's/(password|secret|token|authorization)[^=]*=.*/\1 = (sensitive)/Ig' \
-            "$RUNNER_TEMP/tfplan.txt" > "$RUNNER_TEMP/tfplan-sanitized.txt"
-
-      - name: Publicar plan sanitizado
-        uses: actions/upload-artifact@v7
-        with:
-          name: terraform-plan-${{ github.sha }}
-          path: ${{ runner.temp }}/tfplan-sanitized.txt
-          retention-days: 7
-
-  apply:
-    name: Terraform apply
-    if: inputs.action == 'apply'
-    runs-on: ubuntu-latest
-    needs: build
-    environment: ${{ inputs.environment || 'prod' }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Exigir confirmacao explicita
-        env:
-          CONFIRMATION: ${{ inputs.confirmation }}
-        run: test "$CONFIRMATION" = 'APLICAR SERVERLESS PROD'
-
-      - name: Baixar pacote da Lambda
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ needs.build.outputs.artifact }}
-          path: target
-
-      - uses: ./.github/actions/terraform-backend
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-          tfstate-bucket: ${{ vars.TFSTATE_BUCKET }}
-          tfstate-lock-table: ${{ vars.TFSTATE_LOCK_TABLE }}
-          adot-layer-arn: ${{ vars.ADOT_LAYER_ARN }}
-          new-relic-otlp-endpoint: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net' }}
-          new-relic-license-key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
-
-      - name: Aplicar Terraform
-        shell: bash
-        env:
-          TF_VAR_cluster_state_bucket: ${{ vars.TFSTATE_BUCKET }}
-          TF_VAR_database_state_bucket: ${{ vars.TFSTATE_BUCKET }}
-          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-          TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
-          TF_VAR_adot_layer_arn: ${{ vars.ADOT_LAYER_ARN }}
-          TF_VAR_new_relic_api_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
-          TF_VAR_new_relic_otlp_endpoint: ${{ vars.NEW_RELIC_OTLP_ENDPOINT || 'https://otlp.nr-data.net' }}
-          TF_VAR_service_version: ${{ github.sha }}
-        run: terraform -chdir=infra apply -input=false -auto-approve
-
-      - name: Post-check do endpoint
-        shell: bash
-        env:
-          API_GATEWAY_URL: ${{ vars.API_GATEWAY_URL }}
-        run: |
-          set -euo pipefail
-          if [ -z "${API_GATEWAY_URL:-}" ]; then
-            API_GATEWAY_URL="$(terraform -chdir=infra output -raw api_gateway_url)"
-          fi
-          test -n "$API_GATEWAY_URL"
-          echo "API_GATEWAY_URL=$API_GATEWAY_URL" >> "$GITHUB_STEP_SUMMARY"
-          smoke_url="${API_GATEWAY_URL%/}/api/auth/cpf"
-          # A funcao roda em VPC e o cold start com o agente ADOT leva cerca de
-          # dez segundos; uma unica tentativa com quinze de limite falha por
-          # margem estreita mesmo com o endpoint saudavel. Tenta ate tres vezes,
-          # com limite maior, e aceita o primeiro 422.
-          status=""
-          body=""
-          for attempt in 1 2 3; do
-            response="$(curl --silent --show-error --write-out '\n%{http_code}' --max-time 30 \
-              -X POST "$smoke_url" -H 'content-type: application/json' \
-              --data '{"cpf":"11111111111"}' || true)"
-            status="$(echo "$response" | tail -n 1)"
-            body="$(echo "$response" | sed '$d')"
-            [ "$status" = '422' ] && break
-            echo "Tentativa $attempt: HTTP ${status:-sem resposta}. Nova tentativa em 10s." >&2
-            sleep 10
-          done
-          if [ "$status" != '422' ]; then
-            echo "::error::Smoke CPF invalido falhou! Esperado HTTP 422, mas recebeu HTTP $status. Resposta: $body" >&2
-            exit 1
-          fi
-          echo 'Smoke CPF invalido: HTTP 422 (sucesso)' >> "$GITHUB_STEP_SUMMARY"
-
-  destroy:
-    name: Terraform destroy
-    if: inputs.action == 'destroy'
-    runs-on: ubuntu-latest
-    needs: build
-    environment: ${{ inputs.environment || 'prod' }}
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Exigir confirmacao explicita
-        env:
-          CONFIRMATION: ${{ inputs.confirmation }}
-        run: test "$CONFIRMATION" = 'DESTRUIR SERVERLESS PROD'
-
-      - name: Baixar pacote da Lambda
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ needs.build.outputs.artifact }}
-          path: target
-
-      # O destroy nao valida ADOT nem New Relic: as variaveis abaixo sao
-      # placeholders que apenas satisfazem as validacoes do Terraform.
-      - uses: ./.github/actions/terraform-backend
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-          tfstate-bucket: ${{ vars.TFSTATE_BUCKET }}
-          tfstate-lock-table: ${{ vars.TFSTATE_LOCK_TABLE }}
-          validate-observability: 'false'
-
-      - name: Gerar plan de destroy isolado
-        shell: bash
-        env:
-          TF_VAR_cluster_state_bucket: ${{ vars.TFSTATE_BUCKET }}
-          TF_VAR_database_state_bucket: ${{ vars.TFSTATE_BUCKET }}
-          # Apenas satisfazem variaveis obrigatorias durante a remocao. Nenhum
-          # valor e aplicado a recursos existentes pelo plano -destroy.
-          TF_VAR_db_password: destroy-placeholder-password
-          TF_VAR_jwt_secret: '0000000000000000000000000000000000000000000000000000000000000000'
-          TF_VAR_adot_layer_arn: arn:aws:lambda:us-east-1:901920570463:layer:placeholder:1
-          TF_VAR_new_relic_api_key: destroy-placeholder-new-relic-api-key
-          TF_VAR_service_version: '0000000'
-        run: |
-          set -euo pipefail
-          terraform -chdir=infra plan -destroy -refresh=false -input=false -no-color -out=destroy.tfplan
-          terraform -chdir=infra show -no-color destroy.tfplan > "$RUNNER_TEMP/destroy-plan.txt"
-          sed -E 's/(password|secret|token|authorization)[^=]*=.*/\1 = (sensitive)/Ig' \
-            "$RUNNER_TEMP/destroy-plan.txt" > "$RUNNER_TEMP/destroy-plan-sanitized.txt"
-
-      - name: Verificar fronteira do destroy
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir=infra show -json destroy.tfplan > destroy.tfplan.json
-          if jq -e '.resource_changes[]? | select(.type | startswith("aws_eks_") or startswith("aws_db_"))' \
-            destroy.tfplan.json >/dev/null; then
-            echo '::error::O destroy serverless nao pode remover EKS ou RDS.' >&2
-            exit 1
-          fi
-
-      - name: Publicar plan sanitizado
-        uses: actions/upload-artifact@v7
-        with:
-          name: terraform-destroy-plan-${{ github.sha }}
-          path: ${{ runner.temp }}/destroy-plan-sanitized.txt
-          retention-days: 7
-
-      - name: Aplicar destroy confirmado
-        run: terraform -chdir=infra apply -input=false -auto-approve destroy.tfplan
+      allow_phase4_route_rollback:
+        description: Permitir remover SOMENTE as rotas/integracao adicionais da fase4 para retornar ao fallback antigo
+        required: false
+        type: boolean
+        default: false
+      candidate_version:
+        description: Versão numerada para action=validate; não altera prod
+        type: string
+        required: false
+        default: ''
