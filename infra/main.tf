@@ -303,7 +303,7 @@ resource "aws_apigatewayv2_integration" "fase4" {
   request_parameters     = { "overwrite:path" = "$request.path" }
 }
 locals {
-  fase4_prefixes = ["/api/auth/login", "/api/auth/refresh", "/api/auth/logout", "/api/public", "/api/v1/ordens-servico", "/api/v1/clientes", "/api/v1/veiculos", "/api/v1/servicos", "/api/v1/pecas", "/api/v1/estoques", "/api/v1/usuarios", "/api/v1/orcamentos", "/api/v1/pagamentos", "/api/v1/operacoes-financeiras", "/api/v1/webhooks/mercado-pago", "/api/v1/trabalhos"]
+  fase4_prefixes = ["/api/auth/login", "/api/auth/refresh", "/api/auth/logout", "/api/auth/me", "/api/public", "/api/v1/ordens-servico", "/api/v1/clientes", "/api/v1/veiculos", "/api/v1/servicos", "/api/v1/pecas", "/api/v1/estoques", "/api/v1/usuarios", "/api/v1/orcamentos", "/api/v1/pagamentos", "/api/v1/operacoes-financeiras", "/api/v1/webhooks/mercado-pago", "/api/v1/trabalhos"]
   fase4_routes   = toset(flatten([for p in local.fase4_prefixes : ["ANY ${p}", "ANY ${p}/{proxy+}"]]))
 }
 resource "aws_apigatewayv2_route" "fase4" {
